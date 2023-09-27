@@ -253,6 +253,18 @@ impl Alloqator for Alloq {
         self.pooler.lock().remove_used(ptr);
     }
 
+    fn reset(&self) {
+        let mut pooler = self.pooler.lock();
+        let mut end = self.heap_end() as *const RawChunk;
+        let free_last = unsafe {
+            RawChunk::new(self.heap_start(), self.align).allocate(&mut end, self.chunk_size)
+        };
+        pooler.used_head = null_mut();
+        pooler.used_last = null_mut();
+        pooler.free_last = free_last;
+        pooler.list_end = end;
+    }
+
     // TODO: Improve shrink and grow by simply link another pointer
 }
 

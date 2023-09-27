@@ -2,12 +2,7 @@
 #![feature(pointer_is_aligned)]
 #![no_std]
 
-use core::{
-    alloc::Layout,
-    mem,
-    ops::Range,
-    ptr::{null, NonNull},
-};
+use core::{alloc::Layout, mem, ops::Range, ptr::NonNull};
 
 pub mod list;
 
@@ -44,23 +39,18 @@ pub const fn align_down(addr: usize, align: usize) -> usize {
 pub trait Alloqator {
     type Metadata;
 
-    fn assume_init() -> Self
-    where
-        Self: Sized,
-    {
-        Self::new(null()..null())
-    }
-
     fn new(heap_range: Range<*const u8>) -> Self
     where
         Self: Sized;
 
-    unsafe fn reset(&self) {
-        core::slice::from_raw_parts_mut(
-            self.heap_start() as *mut u8,
-            self.heap_end().offset_from(self.heap_start()) as usize,
-        )
-        .fill(0)
+    fn reset(&self) {
+        unsafe {
+            core::slice::from_raw_parts_mut(
+                self.heap_start() as *mut u8,
+                self.heap_end().offset_from(self.heap_start()) as usize,
+            )
+            .fill(0)
+        }
     }
 
     fn heap_start(&self) -> *const u8;
@@ -87,7 +77,7 @@ pub trait Alloqator {
     }
 }
 
-const fn get_size_hint_in<T, A: Alloqator>(count: usize) -> usize {
+pub const fn get_size_hint_in<T, A: Alloqator>(count: usize) -> usize {
     const fn max(x: usize, y: usize) -> usize {
         if x > y {
             x
