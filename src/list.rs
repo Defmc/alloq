@@ -128,3 +128,90 @@ impl Alloq {
     }
 }
 
+#[cfg(test)]
+pub mod tests {
+    use crate::list::Alloq;
+
+    #[test]
+    fn vec_grow() {
+        let heap_stackish = [0u8; 512];
+        let alloqer = Alloq::from_ptr(heap_stackish.as_ptr_range());
+        let mut v = Vec::with_capacity_in(10, &alloqer);
+        for x in 0..10 {
+            v.push(x);
+        }
+        v.push(255);
+    }
+
+    #[test]
+    fn boxed() {
+        let heap_stackish = [0u8; 512];
+        let alloqer = Alloq::from_ptr(heap_stackish.as_ptr_range());
+        let b = Box::new_in(255u8, &alloqer);
+        let c = Box::new_in(127u8, &alloqer);
+        let b_ptr = &*b as *const u8;
+        let c_ptr = &*c as *const u8;
+        assert_ne!(b_ptr, core::ptr::null_mut());
+        assert_ne!(c_ptr, core::ptr::null_mut());
+        assert_ne!(b_ptr, c_ptr);
+    }
+
+    #[test]
+    fn custom_structs() {
+        struct S {
+            _foo: i32,
+            _bar: [u16; 8],
+            _baz: &'static str,
+        }
+        let heap_stackish = [0u8; 512];
+        let alloqer = Alloq::from_ptr(heap_stackish.as_ptr_range());
+        let mut v = Vec::with_capacity_in(10, &alloqer);
+        for x in 0..10 {
+            let y = x as u16;
+            let s = S {
+                _foo: (x - 5) * 255,
+                _bar: [
+                    y * 8,
+                    y * 8 + 1,
+                    y * 8 + 2,
+                    y * 8 + 3,
+                    y * 8 + 4,
+                    y * 8 + 5,
+                    y * 8 + 6,
+                    y * 8 + 7,
+                ],
+                _baz: "uga",
+            };
+            v.push(s)
+        }
+    }
+
+    #[test]
+    fn full_heap() {
+        use core::mem::size_of;
+        const VECTOR_SIZE: usize = 16;
+        let heap_stackish =
+            [0u8; (size_of::<crate::AlloqMetaData>() + size_of::<[u16; 32]>()) * VECTOR_SIZE];
+        let alloqer = Alloq::from_ptr(heap_stackish.as_ptr_range());
+        let mut v = Vec::with_capacity_in(VECTOR_SIZE, &alloqer);
+        for x in 0..VECTOR_SIZE {
+            let ar: [u16; 32] = core::array::from_fn(|i| (i * x) as u16);
+            v.push(ar);
+        }
+    }
+
+    #[test]
+    fn zero_sized() {
+        use core::mem::size_of;
+        const VECTOR_SIZE: usize = 1024;
+        let heap_stackish = [0u8; size_of::<()>() * VECTOR_SIZE];
+        let alloqer = Alloq::from_ptr(heap_stackish.as_ptr_range());
+        let mut v = Vec::with_capacity_in(VECTOR_SIZE, &alloqer);
+        for _ in 0..VECTOR_SIZE {
+            v.push(());
+        }
+        let b = Box::new_in((), &alloqer);
+        assert_eq!(*b, ());
+        assert_eq!(v.len(), VECTOR_SIZE);
+    }
+}
