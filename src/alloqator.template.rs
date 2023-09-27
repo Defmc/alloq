@@ -20,3 +20,6 @@ unsafe impl core::alloc::GlobalAlloc for Alloq {
         Alloqator::dealloc(self, ptr, layout)
     }
 }
+
+unsafe impl Send for Alloq {}
+unsafe impl Sync for Alloq {}
