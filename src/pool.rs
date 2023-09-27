@@ -97,25 +97,6 @@ impl RawChunk {
     }
 
     #[inline(always)]
-    pub fn insert_in_list(&mut self, back: &mut RawChunk) {
-        // TODO: Optimise chunk chain deallocation by using `back` as `end`
-        assert_eq!(self.back, null_mut());
-        let next = back.next;
-        let mut last = back;
-        for c in self.iter() {
-            unsafe {
-                Self::connect_unchecked(last, &mut *c);
-                last = &mut *c;
-            }
-        }
-        if !next.is_null() {
-            unsafe {
-                Self::connect_unchecked(last, &mut *next);
-            }
-        }
-    }
-
-    #[inline(always)]
     pub fn connect(back: &mut Self, next: &mut Self) {
         assert!(back.next.is_null());
         assert!(next.back.is_null());
@@ -148,10 +129,10 @@ impl RawChunk {
     }
 
     pub fn log_list(&self) {
-        for _node in unsafe { (*self.first()).iter() } {
-            //    std::print!("({node:?}) .:. {:?} -> ", unsafe { &*node });
-        }
-        //std::println!("{:?}", null_mut::<Self>());
+        // for node in unsafe { (*self.first()).iter() } {
+        //     std::println!("({node:?}) .:. {:?} -> ", unsafe { &*node });
+        // }
+        // std::println!("{:?}", null_mut::<Self>());
     }
 
     pub fn sort<'a>(&'a mut self) -> &'a mut Self {
@@ -271,10 +252,6 @@ pub struct Pool {
 }
 
 impl Pool {
-    /// # Safety
-    /// `raw_chunk` must be a valid and previous allocated raw chunk.
-    pub unsafe fn push_used(&mut self, _raw_chunk: *mut RawChunk) {}
-
     pub fn get_free_chunk(&mut self, chunk_size: usize, align: usize) -> *mut RawChunk {
         let last = unsafe { &mut *self.free_last };
         let freed = if last.back.is_null() {
@@ -289,10 +266,11 @@ impl Pool {
     /// # Safety
     /// `ptr` must be previous returned by `Alloq::allocate`.
     pub unsafe fn remove_used(&mut self, raw_chunk_ptr: *mut RawChunk) {
-        let last_free = &mut *self.free_last;
         let raw_chunk = &mut *raw_chunk_ptr;
-        raw_chunk.insert_in_list(last_free);
-        self.free_last = raw_chunk_ptr;
+        let last = raw_chunk.iter().last().unwrap();
+        raw_chunk.log_list();
+        RawChunk::connect_unchecked(&mut *self.free_last, &mut *last);
+        self.free_last = last;
     }
 
     /// Get a `RawChunk` chain that can allocate the `layout`
@@ -304,7 +282,7 @@ impl Pool {
         chunk_align: usize,
         layout: core::alloc::Layout,
     ) -> *mut RawChunk {
-        let mut needed = layout.size();
+        let needed = layout.size();
         let mut start: *mut RawChunk = null_mut();
         let mut last: *mut RawChunk = null_mut();
         let mut aligned: *mut RawChunk = null_mut();
@@ -322,6 +300,9 @@ impl Pool {
                 aligned = null_mut();
             }
             if aligned.offset_from(last) >= needed as isize {
+                if last == self.free_last {
+                    (*self.free_last).alloc_next(&mut self.list_end, chunk_size, chunk_align);
+                }
                 (*start).slice_until(&mut *last);
                 return start;
             }
@@ -350,6 +331,9 @@ impl Alloq {
     ) -> Self {
         // SAFE: Its will not be even used as a `RawChunk`.
         let mut end = heap_range.end as *mut RawChunk;
+        // FIXME: I don't think so.
+        // Metadata is not allocated by the allocator, it's by `RawChunk` using a simple pointer
+        // move.
         assert!(
             chunk_size > mem::size_of::<RawChunk>(),
             "can't allocate any blocks (minimum > {})",
