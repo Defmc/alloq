@@ -32,9 +32,9 @@ impl Alloqator for Alloq {
         self.heap_end
     }
 
-/// Introducing an element is O(1). It just set the stack's top to the end of the allocated area
-/// and add 1 to the counter
-#[inline(always)]
+    /// Introducing an element is O(1). It just set the stack's top to the end of the allocated area
+    /// and add 1 to the counter
+    #[inline(always)]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let mut lock = self.iter.lock();
         let start = crate::align_up(lock.1 as usize, layout.align()) as *mut u8;
@@ -46,8 +46,8 @@ impl Alloqator for Alloq {
         lock.0 += 1;
         start
     }
-/// Can't deallocate. Just reset. When the counter reaches 0, it reset the stack's top, since
-/// counter being 0 means that there is no vvalue allocated
+    /// Can't deallocate. Just reset. When the counter reaches 0, it reset the stack's top, since
+    /// counter being 0 means that there is no vvalue allocated
 
     #[inline(always)]
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
