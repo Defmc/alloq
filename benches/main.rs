@@ -14,7 +14,10 @@ use std::{
 use alloq::{bump, debump, pool, Alloqator};
 
 pub const HEAP_SIM_SIZE: usize = 1024 * 1024 * 1024;
-pub static mut HEAP_SIM: [u8; HEAP_SIM_SIZE] = [0u8; HEAP_SIM_SIZE];
+pub static mut HEAP_SIM_BUMP: [u8; HEAP_SIM_SIZE] = [0u8; HEAP_SIM_SIZE];
+pub static mut HEAP_SIM_DEBUMP: [u8; HEAP_SIM_SIZE] = [0u8; HEAP_SIM_SIZE];
+pub static mut HEAP_SIM_POOL: [u8; HEAP_SIM_SIZE] = [0u8; HEAP_SIM_SIZE];
+// pub static mut HEAP_SIM_LIST: [u8; HEAP_SIM_SIZE] = [0u8; HEAP_SIM_SIZE];
 pub const TEST_COUNT: usize = 10_usize.pow(3);
 
 fn get_time(f: impl FnOnce()) -> Duration {
@@ -60,11 +63,11 @@ fn main() {
 
     println!("preparing alloqators");
 
-    let heap_ptr_range = unsafe { HEAP_SIM.as_ptr_range() };
-    let bump = bump::Alloq::new(heap_ptr_range.clone());
-    let debump = debump::Alloq::new(heap_ptr_range.clone());
-    let pool =
-        unsafe { pool::Alloq::with_chunk_size(heap_ptr_range.clone(), HEAP_SIM_SIZE / 1024, 2) };
+    let bump = bump::Alloq::new(unsafe { HEAP_SIM_BUMP.as_ptr_range() });
+    let debump = debump::Alloq::new(unsafe { HEAP_SIM_DEBUMP.as_ptr_range() });
+    let pool = unsafe {
+        pool::Alloq::with_chunk_size(HEAP_SIM_POOL.as_ptr_range(), HEAP_SIM_SIZE / 1024, 2)
+    };
 
     println!("running benchmarks");
     run_test!(dir, linear_allocation, &bump, &debump, &pool);
@@ -148,18 +151,18 @@ fn vector_fragmentation(a: &(impl Allocator + Alloqator), n: usize) -> Duration 
     });
     assert!(
         v1.iter().all(|x| x % 2 == 0),
-        "vector_fragmentation assert error: {} can't handle multiple reallocs",
+        "vector_fragmentation assert error (v1 contains odds numbers): {} can't handle multiple reallocs",
         std::any::type_name_of_val(a)
     );
     assert!(
         v2.iter().all(|x| x % 2 == 1),
-        "vector_fragmentation assert error: {} can't handle multiple reallocs",
+        "vector_fragmentation assert error (v2 contains even numbers): {} can't handle multiple reallocs",
         std::any::type_name_of_val(a)
     );
     assert_eq!(
         v1.iter().chain(v2.iter()).sum::<isize>(),
         -v3.iter().sum::<isize>(),
-        "vector_fragmentation assert error: {} can't handle multiple reallocs",
+        "vector_fragmentation assert error (sum of v3 is not equal to inverse of v1 + v2): {} can't handle multiple reallocs",
         std::any::type_name_of_val(a)
     );
     t
