@@ -1,7 +1,30 @@
-use core::{alloc::Layout, ops::Range};
+use core::{alloc::Layout, mem, ops::Range};
 use spin::Mutex;
 
 use crate::Alloqator;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AlloqMetaData {
+    pub start: *const u8,
+}
+
+impl AlloqMetaData {
+    pub fn new(start: *const u8) -> Self {
+        Self { start }
+    }
+
+    pub unsafe fn write_meta(&self, obj_start: *mut u8, end: *const u8) -> *mut u8 {
+        // FIXME: Is there a case where it's misaligned?
+        let ptr_to_write = end.offset(-(mem::size_of::<Self>() as isize));
+        *(ptr_to_write as *mut AlloqMetaData) = *self;
+        obj_start
+    }
+
+    pub unsafe fn previous_alloc(ptr: *const u8) -> Self {
+        let ptr = ptr.offset(-(mem::size_of::<Self>() as isize));
+        *(ptr as *const AlloqMetaData)
+    }
+}
 
 pub struct Alloq {
     pub heap_start: *const u8,
@@ -33,24 +56,28 @@ impl Alloqator for Alloq {
     #[inline(always)]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let mut lock = self.iter.lock();
+        let block_start = lock.1;
         let start = crate::align(lock.1 as usize, layout.align()) as *mut u8;
         let end = start.offset(layout.size() as isize);
-        if end > self.heap_end as *mut u8 {
+        let start_meta = crate::align(end as usize, mem::align_of::<AlloqMetaData>()) as *mut u8;
+        let end_meta = start_meta.offset(mem::size_of::<AlloqMetaData>() as isize);
+        if end_meta > self.heap_end as *mut u8 {
             panic!("no available memory")
         }
-        lock.1 = end;
+        lock.1 = end_meta;
         lock.0 += 1;
-        start
+        AlloqMetaData::new(block_start).write_meta(start, end_meta)
     }
 
     #[inline(always)]
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
         let mut lock = *self.iter.lock();
         lock.0 -= 1;
         if lock.0 == 0 {
             lock.1 = self.heap_start as *mut u8;
             return;
         }
+        lock.1 = AlloqMetaData::previous_alloc(ptr).start as *mut u8;
     }
 }
 
