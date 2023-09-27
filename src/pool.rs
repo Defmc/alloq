@@ -24,20 +24,20 @@ impl RawChunk {
         }
     }
 
-    pub unsafe fn allocate<'a>(&self, end: *mut u8, chunk_size: usize) -> *mut Self {
-        let ptr = end.offset(-(mem::size_of::<Self>() as isize));
-        let aligned_ptr = crate::align_down(ptr as usize, mem::align_of::<Self>());
-        let aligned = aligned_ptr as *mut Self;
+    pub unsafe fn allocate<'a>(&self, end: &mut *const RawChunk, chunk_size: usize) -> *mut Self {
+        let ptr = end.offset(-1);
+        let aligned = crate::align_down(ptr as usize, mem::align_of::<Self>()) as *mut Self;
         assert!(
-            self.chunk.offset(chunk_size as isize) < end,
+            self.chunk.offset(chunk_size as isize) < aligned as *const u8,
             "too low memory: can't allocate a chunk ({} bytes in {:?}) and metadata ({} bytes in {:?})",
-            chunk_size, self.chunk, mem::size_of::<Self>(), end
+            chunk_size, self.chunk, mem::size_of::<Self>(), aligned
         );
         debug_assert!(
-            aligned.offset(1) as *const u8 <= end,
+            aligned.offset(1) as *const Self <= *end,
             "using an already allocated RawChunk area"
         );
         *aligned = self.clone();
+        *end = aligned;
         aligned
     }
 
@@ -59,21 +59,7 @@ impl RawChunk {
     ) -> *mut Self {
         let last_alloc = *list_end;
         let addr = (*last_alloc).chunk.offset(chunk_size as isize);
-        let next =
-            Self::new(addr, align /* already aligned*/).allocate(last_alloc as *mut u8, chunk_size);
-        assert!(
-            next.offset(1) <= last_alloc as *mut RawChunk,
-            "filling the previous node {:?}-{:?} in {last_alloc:?}",
-            // rust-analyzer can't rename inside strings?
-            next,
-            next.offset(1)
-        );
-        assert!(
-            *list_end > next,
-            "next is bigger {:?} > {next:?}",
-            *list_end
-        );
-        *list_end = next;
+        let next = Self::new(addr, align /* already aligned*/).allocate(list_end, chunk_size);
         Self::connect_unchecked(self, &mut *next);
         next
     }
@@ -173,10 +159,10 @@ impl Pool {
 
     pub unsafe fn get_free_chunk(&mut self, chunk_size: usize, align: usize) -> *mut RawChunk {
         let last = &mut *self.free_last;
-        let freed = if last.next.is_null() {
+        let freed = if last.back.is_null() {
             &mut *last.alloc_next(&mut self.list_end, chunk_size, align)
         } else {
-            &mut *last.next
+            &mut *last.back
         };
         freed.disconnect();
         freed
@@ -194,6 +180,7 @@ impl Pool {
                     self.used_last = raw_chunk.back;
                 }
                 raw_chunk.insert_in_list(last_free);
+                self.free_last = raw_chunk_ptr;
                 return;
             }
         }
@@ -207,8 +194,8 @@ impl Alloq {
         chunk_size: usize,
         align: usize,
     ) -> Self {
-        let free_last =
-            RawChunk::new(heap_range.start, align).allocate(heap_range.end as *mut u8, chunk_size);
+        let mut end = heap_range.end as *const RawChunk;
+        let free_last = RawChunk::new(heap_range.start, align).allocate(&mut end, chunk_size);
         Self {
             heap_start: heap_range.start,
             heap_end: heap_range.end,
@@ -217,18 +204,10 @@ impl Alloq {
                 used_head: null_mut(),
                 free_last,
                 used_last: null_mut(),
-                list_end: free_last,
+                list_end: end,
             }
             .into(),
         }
-    }
-    pub const fn get_max_size<T>(count: usize) -> usize {
-        let align_of = if mem::align_of::<T>() > 0 {
-            mem::align_of::<T>()
-        } else {
-            1
-        };
-        (mem::size_of::<T>() + mem::size_of::<RawChunk>() + align_of - 1) * count
     }
 }
 
@@ -254,7 +233,9 @@ impl Alloqator for Alloq {
             let mut pooler = self.pooler.lock();
             let chunk = pooler.get_free_chunk(self.chunk_size, layout.align());
             pooler.push_used(chunk);
-            if layout.size() > self.chunk_size {
+            if (*chunk).addr.offset(layout.size() as isize)
+                > (*chunk).chunk.offset(self.chunk_size as isize)
+            {
                 todo!(
                 "layout (size {} bytes and align {} bytes) cannot be allocated in a chunk ({} bytes)",
                 layout.size(),
@@ -262,6 +243,7 @@ impl Alloqator for Alloq {
                 self.chunk_size
             );
             }
+            assert!(self.heap_range().contains(&(*chunk).chunk), "out of heap");
             chunk
         };
         (*chunk).addr as *mut u8
@@ -358,7 +340,7 @@ pub mod tests {
             _bar: [u16; 8],
             _baz: &'static str,
         }
-        let heap_stackish = [0u8; Alloq::get_max_size::<S>(10) * 2];
+        let heap_stackish = [0u8; crate::get_size_hint_in::<S, Alloq>(10) * 2];
         let alloqer = unsafe { Alloq::with_chunk_size(heap_stackish.as_ptr_range(), 512, 2) };
         let mut v = Vec::with_capacity_in(10, &alloqer);
         for x in 0..10 {
@@ -384,7 +366,7 @@ pub mod tests {
     #[test]
     fn full_heap() {
         const VECTOR_SIZE: usize = 16;
-        let heap_stackish = [0u8; Alloq::get_max_size::<[u16; 32]>(VECTOR_SIZE) * 2];
+        let heap_stackish = [0u8; crate::get_size_hint_in::<[u16; 32], Alloq>(VECTOR_SIZE) * 2];
         let alloqer = unsafe { Alloq::with_chunk_size(heap_stackish.as_ptr_range(), 1024, 2) };
         let mut v = Vec::with_capacity_in(VECTOR_SIZE, &alloqer);
         for x in 0..VECTOR_SIZE {
@@ -397,7 +379,7 @@ pub mod tests {
     fn zero_sized() {
         const VECTOR_SIZE: usize = 1024;
         // FIXME: 32768 bytes for ZST? Really?
-        let heap_stackish = [0u8; Alloq::get_max_size::<()>(VECTOR_SIZE)];
+        let heap_stackish = [0u8; crate::get_size_hint_in::<(), Alloq>(VECTOR_SIZE)];
         let alloqer = Alloq::new(heap_stackish.as_ptr_range());
         let mut v = Vec::with_capacity_in(VECTOR_SIZE, &alloqer);
         for _ in 0..VECTOR_SIZE {
