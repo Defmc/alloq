@@ -1,6 +1,6 @@
 use crate::{AlloqMetaData, Alloqator};
+use core::ops::Range;
 use core::slice;
-use std::ops::Range;
 
 pub struct Alloq {
     heap_start: *const u8,

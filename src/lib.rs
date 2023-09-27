@@ -1,7 +1,7 @@
 #![feature(allocator_api)]
 #![feature(pointer_is_aligned)]
 
-use std::{
+use core::{
     alloc::Layout,
     ops::Range,
     ptr::{null, NonNull},

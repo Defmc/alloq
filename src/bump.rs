@@ -1,5 +1,5 @@
+use core::{alloc::Layout, ops::Range};
 use spin::Mutex;
-use std::{alloc::Layout, ops::Range};
 
 use crate::Alloqator;
 
