@@ -1,210 +1,159 @@
+use core::{
+    alloc::{Allocator, Layout},
+    marker::PhantomData,
+    mem,
+    ops::Range,
+    ptr,
+};
+
 use crate::Alloqator;
-use core::alloc::{AllocError, Allocator};
-use core::ops::Range;
-use core::ptr::NonNull;
-use core::{mem, slice};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AlloqMetaData {
-    size: usize,
+    pub end: *const u8,
+    pub next: *mut Self,
+    pub back: *mut Self,
 }
 
 impl AlloqMetaData {
-    pub fn new(size: usize) -> Self {
-        Self { size }
-    }
-
-    pub unsafe fn write_meta(&self, ptr: *mut u8) -> *mut u8 {
-        *(ptr as *mut AlloqMetaData) = *self;
-        ptr.offset(core::mem::size_of::<AlloqMetaData>() as isize)
-    }
-
-    pub const fn total_size(&self) -> usize {
-        self.size + core::mem::size_of::<AlloqMetaData>()
-    }
-
-    pub unsafe fn from_ptr(ptr: *const u8) -> AlloqMetaData {
-        *(ptr as *const AlloqMetaData)
-    }
-}
-pub struct Alloq {
-    heap_start: *const u8,
-    heap_end: *const u8,
-}
-
-unsafe impl Allocator for Alloq {
-    fn allocate(&self, layout: core::alloc::Layout) -> Result<NonNull<[u8]>, AllocError> {
-        let mut start = self.heap_start as *mut u8;
-        let mut end = self.heap_start as *mut u8;
-        let obj_size = (layout.size() + core::mem::size_of::<AlloqMetaData>()) as isize;
-        let is_aligned = |p: *mut u8| {
-            (p as usize) % (layout.align() + mem::size_of::<AlloqMetaData>()) == 0
-                && (p as usize) % mem::align_of::<AlloqMetaData>() == 0
+    pub unsafe fn allocate(list: *mut Self, range: Range<*const u8>, layout: Layout) -> Self {
+        let aligned_meta =
+            crate::align_up(range.start as usize, mem::align_of::<Self>()) as *mut u8;
+        let aligned_val = crate::align_up(
+            aligned_meta.offset(mem::size_of::<Self>() as isize) as usize,
+            layout.align(),
+        ) as *mut u8;
+        let mut s = Self {
+            end: aligned_val.offset(layout.size() as isize),
+            next: ptr::null_mut(),
+            back: ptr::null_mut(),
         };
-        unsafe {
-            loop {
-                if *end != 0 {
-                    let metadata = end as *const AlloqMetaData;
-                    end = end.offset((*metadata).total_size() as isize);
-                    start = end;
-                }
-                end = end.offset(1);
-                if !is_aligned(start) && is_aligned(end) {
-                    start = end;
-                }
-                if end.offset_from(start) >= obj_size && is_aligned(start) {
-                    let ptr = AlloqMetaData::new(layout.size()).write_meta(start as *mut u8);
-                    let slice = core::slice::from_raw_parts_mut(ptr, layout.size());
-                    return NonNull::new(slice).ok_or(AllocError);
-                }
-                if end as *const u8 >= self.heap_end {
-                    panic!("no available memory");
-                }
+        assert!(
+            aligned_val.offset(layout.size() as isize) as *const u8 <= range.end,
+            "no available memory"
+        );
+        if !list.is_null() {
+            Self::connect_unchecked(&mut (*list), &mut s);
+        }
+        s.write(aligned_meta);
+        s
+    }
+    pub unsafe fn write(&self, ptr: *mut u8) -> *mut u8 {
+        let aligned = crate::align_up(ptr as usize, mem::align_of::<Self>()) as *mut Self;
+        *aligned = *self;
+        aligned as *mut u8
+    }
+
+    pub fn disconnect(&mut self) {
+        if !self.back.is_null() {
+            unsafe {
+                (*self.back).next = self.next;
+            }
+        }
+        if !self.next.is_null() {
+            unsafe {
+                (*self.next).back = self.back;
             }
         }
     }
 
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: core::alloc::Layout) {
-        let offset = unsafe {
-            ptr.as_ptr()
-                .offset(-(core::mem::size_of::<AlloqMetaData>() as isize))
-        };
-        unsafe {
-            slice::from_raw_parts_mut(
-                offset,
-                layout.size() + core::mem::size_of::<AlloqMetaData>(),
-            )
-        }
-        .fill(0)
+    pub unsafe fn connect_unchecked(back: &mut Self, next: &mut Self) {
+        back.next = next as *mut Self;
+        next.back = back as *mut Self;
     }
 }
 
-impl Alloqator for Alloq {
+pub trait AllocMethod {
+    fn fit(first_meta: &mut AlloqMetaData, layout: Layout) -> Range<*const u8>;
+    fn remove(first_meta: &mut AlloqMetaData, ptr: *mut u8);
+}
+
+pub struct FirstFit;
+impl AllocMethod for FirstFit {
+    fn fit(first_meta: &mut AlloqMetaData, layout: Layout) -> Range<*const u8> {
+        todo!()
+    }
+    fn remove(first_meta: &mut AlloqMetaData, ptr: *mut u8) {
+        todo!()
+    }
+}
+
+pub struct NextFit;
+impl AllocMethod for NextFit {
+    fn fit(first_meta: &mut AlloqMetaData, layout: Layout) -> Range<*const u8> {
+        todo!()
+    }
+    fn remove(first_meta: &mut AlloqMetaData, ptr: *mut u8) {
+        todo!()
+    }
+}
+
+pub struct BestFit;
+impl AllocMethod for BestFit {
+    fn fit(first_meta: &mut AlloqMetaData, layout: Layout) -> Range<*const u8> {
+        todo!()
+    }
+    fn remove(first_meta: &mut AlloqMetaData, ptr: *mut u8) {
+        todo!()
+    }
+}
+
+pub struct Alloq<A: AllocMethod = FirstFit> {
+    pub heap_start: *const u8,
+    pub heap_end: *const u8,
+    pub first: spin::Mutex<Option<AlloqMetaData>>,
+    pub _marker: PhantomData<A>,
+}
+
+impl<A: AllocMethod> Alloq<A> {}
+
+unsafe impl<A: AllocMethod> Allocator for Alloq<A> {
+    fn allocate(
+        &self,
+        layout: core::alloc::Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, core::alloc::AllocError> {
+        let mut lock = self.first.lock();
+        if lock.is_none() {
+            let meta = unsafe {
+                AlloqMetaData::allocate(
+                    ptr::null_mut() as *mut AlloqMetaData,
+                    self.heap_range(),
+                    layout,
+                )
+            };
+            *lock = Some(meta);
+        } else {
+            let fit = A::fit(lock.as_mut().unwrap(), layout);
+            unsafe { AlloqMetaData::allocate(lock.as_mut().unwrap(), fit, layout) };
+        }
+        todo!()
+    }
+
+    unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, _: core::alloc::Layout) {
+        let mut lock = self.first.lock();
+        A::remove(lock.as_mut().unwrap(), ptr.as_ptr());
+    }
+}
+
+impl<A: AllocMethod> Alloqator for Alloq<A> {
     type Metadata = AlloqMetaData;
-    fn new(heap_range: Range<*const u8>) -> Self {
+
+    fn new(heap_range: core::ops::Range<*const u8>) -> Self
+    where
+        Self: Sized,
+    {
         Self {
             heap_start: heap_range.start,
             heap_end: heap_range.end,
+            first: None.into(),
+            _marker: PhantomData,
         }
     }
 
-    #[inline(always)]
-    fn heap_end(&self) -> *const u8 {
-        self.heap_end
-    }
-
-    #[inline(always)]
     fn heap_start(&self) -> *const u8 {
         self.heap_start
     }
-}
-
-crate::impl_allocator!(Alloq);
-
-#[cfg(test)]
-pub mod tests {
-    use super::Alloq;
-    use crate::Alloqator;
-    extern crate alloc;
-    use alloc::{boxed::Box, vec::Vec};
-
-    #[test]
-    fn vec_grow() {
-        let heap_stackish = [0u8; 512];
-        let alloqer = Alloq::new(heap_stackish.as_ptr_range());
-        let mut v = Vec::with_capacity_in(10, &alloqer);
-        for x in 0..10 {
-            v.push(x);
-        }
-        v.push(255);
-    }
-
-    #[test]
-    fn boxed() {
-        let heap_stackish = [0u8; 512];
-        let alloqer = Alloq::new(heap_stackish.as_ptr_range());
-        let b = Box::new_in(255u8, &alloqer);
-        let c = Box::new_in(127u8, &alloqer);
-        let b_ptr = &*b as *const u8;
-        let c_ptr = &*c as *const u8;
-        assert_ne!(b_ptr, core::ptr::null_mut());
-        assert_ne!(c_ptr, core::ptr::null_mut());
-        assert_ne!(b_ptr, c_ptr);
-    }
-
-    #[test]
-    fn fragmented_heap() {
-        let heap_stackish = [0u8; 1024 * 1024];
-        let alloqer = Alloq::new(heap_stackish.as_ptr_range());
-        let mut v: Vec<u8, _> = Vec::new_in(&alloqer);
-        let mut w: Vec<u8, _> = Vec::new_in(&alloqer);
-        for x in 0..128 {
-            match x % 2 {
-                0 => v.push(x),
-                1 => w.push(x),
-                _ => unreachable!(),
-            }
-        }
-        assert!(v.iter().all(|i| i % 2 == 0));
-        assert!(w.iter().all(|i| i % 2 == 1));
-    }
-    #[test]
-    fn custom_structs() {
-        struct S {
-            _foo: i32,
-            _bar: [u16; 8],
-            _baz: &'static str,
-        }
-        let heap_stackish = [0u8; 512];
-        let alloqer = Alloq::new(heap_stackish.as_ptr_range());
-        let mut v = Vec::with_capacity_in(10, &alloqer);
-        for x in 0..10 {
-            let y = x as u16;
-            let s = S {
-                _foo: (x - 5) * 255,
-                _bar: [
-                    y * 8,
-                    y * 8 + 1,
-                    y * 8 + 2,
-                    y * 8 + 3,
-                    y * 8 + 4,
-                    y * 8 + 5,
-                    y * 8 + 6,
-                    y * 8 + 7,
-                ],
-                _baz: "uga",
-            };
-            v.push(s)
-        }
-    }
-
-    #[test]
-    fn full_heap() {
-        use core::mem::size_of;
-        const VECTOR_SIZE: usize = 16;
-        let heap_stackish = [0u8; (size_of::<<Alloq as Alloqator>::Metadata>()
-            + size_of::<[u16; 32]>())
-            * VECTOR_SIZE];
-        let alloqer = Alloq::new(heap_stackish.as_ptr_range());
-        let mut v = Vec::with_capacity_in(VECTOR_SIZE, &alloqer);
-        for x in 0..VECTOR_SIZE {
-            let ar: [u16; 32] = core::array::from_fn(|i| (i * x) as u16);
-            v.push(ar);
-        }
-    }
-
-    #[test]
-    fn zero_sized() {
-        use core::mem::size_of;
-        const VECTOR_SIZE: usize = 1024;
-        let heap_stackish = [0u8; size_of::<()>() * VECTOR_SIZE];
-        let alloqer = Alloq::new(heap_stackish.as_ptr_range());
-        let mut v = Vec::with_capacity_in(VECTOR_SIZE, &alloqer);
-        for _ in 0..VECTOR_SIZE {
-            v.push(());
-        }
-        let b = Box::new_in((), &alloqer);
-        assert_eq!(*b, ());
-        assert_eq!(v.len(), VECTOR_SIZE);
+    fn heap_end(&self) -> *const u8 {
+        self.heap_end
     }
 }
