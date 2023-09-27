@@ -121,11 +121,11 @@ impl RawChunk {
         self.iter().last().unwrap()
     }
 
-    pub fn log_list(&self, w: &mut impl core::fmt::Write) {
+    pub fn log_list(&self) {
         for node in unsafe { (*self.first()).iter() } {
-            write!(w, "({node:?}) .:. {:?} -> ", unsafe { &*node }).unwrap();
+            //    std::print!("({node:?}) .:. {:?} -> ", unsafe { &*node });
         }
-        writeln!(w, "{:?}", null_mut::<Self>()).unwrap();
+        //std::println!("{:?}", null_mut::<Self>());
     }
 }
 
@@ -188,23 +188,18 @@ impl Pool {
         freed
     }
 
-    pub unsafe fn remove_used(&mut self, addr: *const u8) {
+    pub unsafe fn remove_used(&mut self, raw_chunk_ptr: *mut RawChunk) {
         let last_free = &mut *self.free_last;
-        for raw_chunk_ptr in (*self.used_head).iter() {
-            let raw_chunk = &mut *(raw_chunk_ptr);
-            if (*raw_chunk).addr == addr {
-                if self.used_head == raw_chunk_ptr {
-                    self.used_head = raw_chunk.next;
-                }
-                if self.used_last == raw_chunk_ptr {
-                    self.used_last = raw_chunk.back;
-                }
-                raw_chunk.insert_in_list(last_free);
-                self.free_last = raw_chunk_ptr;
-                return;
-            }
+        let raw_chunk = &mut *raw_chunk_ptr;
+        if self.used_head == raw_chunk_ptr {
+            self.used_head = raw_chunk.next;
         }
-        panic!("double-free on {addr:?}");
+        if self.used_last == raw_chunk_ptr {
+            self.used_last = raw_chunk.back;
+        }
+        raw_chunk.insert_in_list(last_free);
+        self.free_last = raw_chunk_ptr;
+        //panic!("double-free on {addr:?}");
     }
 }
 
@@ -229,6 +224,31 @@ impl Alloq {
             }
             .into(),
         }
+    }
+
+    /// Return the `RawChunk` that stores that chunk
+    pub unsafe fn get_raw_chunk_from(
+        &self,
+        ptr: *const u8,
+        _layout: core::alloc::Layout,
+    ) -> *const RawChunk {
+        // SOUND: `ptr` is always `crate::align_up`, which garantees `*ptr` > `*chunk`
+        let chunk = crate::align_down(ptr as usize, self.align);
+        let first_chunk = crate::align_up(self.heap_start() as usize, self.align);
+        let chunk_idx = (chunk - first_chunk) / self.chunk_size;
+        let first_raw = crate::align_down(
+            self.heap_end()
+                .offset(-(mem::size_of::<RawChunk>() as isize)) as usize,
+            mem::align_of::<RawChunk>() as usize,
+        ) as *const RawChunk;
+        // FIXME: Is size always multiple of alignment?
+        let raw = first_raw.offset(-(chunk_idx as isize));
+        debug_assert_eq!(
+            ptr,
+            (*raw).addr,
+            "invalid `ptr`: can't find a correspondent chunk"
+        );
+        raw
     }
 }
 
@@ -273,8 +293,9 @@ impl Alloqator for Alloq {
     }
 
     /// Moves the block to the free list
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: core::alloc::Layout) {
-        self.pooler.lock().remove_used(ptr);
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
+        let raw_chunk = self.get_raw_chunk_from(ptr, layout);
+        self.pooler.lock().remove_used(raw_chunk as *mut RawChunk);
     }
 
     fn reset(&self) {
