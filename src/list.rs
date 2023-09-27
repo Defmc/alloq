@@ -67,6 +67,21 @@ impl AlloqMetaData {
     }
 }
 
+pub struct AlloqMetaDataIter(*mut AlloqMetaData);
+
+impl Iterator for AlloqMetaDataIter {
+    type Item = *mut AlloqMetaData;
+    fn next(&mut self) -> Option<Self::Item> {
+        let r = self.0;
+        if r.is_null() {
+            None
+        } else {
+            self.0 = unsafe { (*r).next };
+            Some(r)
+        }
+    }
+}
+
 pub trait AllocMethod {
     fn fit(
         first_and_end: (&mut AlloqMetaData, &mut AlloqMetaData),

@@ -148,6 +148,7 @@ impl Iterator for RawChunkIter {
         }
     }
 }
+
 /// An fixed-size allocator with a pool memory managment. Using a native reverse link-list, its map
 /// the block and use two lists to cache them.
 #[derive(Debug)]
