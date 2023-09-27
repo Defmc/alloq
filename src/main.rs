@@ -5,12 +5,12 @@ use std::{
     alloc::{Allocator, Layout},
     any,
     ptr::{self},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use alloq::{
-    bump::Alloq as Bump, debump::Alloq as DeBump, list::Alloq as List, pool::Alloq as Pool,
-    Alloqator,
+    bump::Alloq as Bump, debump::Alloq as DeBump,
+    /* list::Alloq as List, */ pool::Alloq as Pool, Alloqator,
 };
 
 const HEAP_SIZE: usize = 1024 * 1024 * 1024;
@@ -33,9 +33,9 @@ fn main() {
     let mut bump = Bump::new(unsafe { HEAP.as_ptr_range() });
     let mut debump = DeBump::new(unsafe { HEAP.as_ptr_range() });
     let mut pool = unsafe { Pool::with_chunk_size(HEAP.as_ptr_range(), TEST_COUNT * 32, 2) };
-    let mut list = List::new(unsafe { HEAP.as_ptr_range() });
+    //    let mut list = List::new(unsafe { HEAP.as_ptr_range() });
 
-    println!("alloq, count, linear_allocation (ns), linear_deallocation (ns), stack_like_deallocation (ns), vector_pushing (ns)");
+    println!("alloq, count, linear_allocation (ns), linear_deallocation (ns), stack_like_deallocation (ns), vector_pushing (ns), reset (ns)");
 
     for n in 0..TEST_COUNT {
         test_alloq(&mut bump, n);
@@ -90,7 +90,7 @@ fn test_alloq(a: &mut (impl Alloqator + Allocator), n: usize) {
         })
     );
 
-    a.reset();
+    print!("{}", get_time(|| a.reset()));
 
     println!("");
 }
