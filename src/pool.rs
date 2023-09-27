@@ -98,12 +98,19 @@ impl RawChunk {
 
     #[inline(always)]
     pub fn insert_in_list(&mut self, back: &mut RawChunk) {
-        self.disconnect();
+        // TODO: Optimise chunk chain deallocation by using `back` as `end`
+        assert_eq!(self.back, null_mut());
         let next = back.next;
-        Self::connect_unchecked(back, self);
+        let mut last = back;
+        for c in self.iter() {
+            unsafe {
+                Self::connect_unchecked(last, &mut *c);
+                last = &mut *c;
+            }
+        }
         if !next.is_null() {
             unsafe {
-                Self::connect_unchecked(self, &mut *next);
+                Self::connect_unchecked(last, &mut *next);
             }
         }
     }
@@ -200,6 +207,16 @@ impl RawChunk {
         }
         &mut *list
     }
+    pub unsafe fn slice_until(&mut self, last: &mut RawChunk) {
+        let back = self.back;
+        let next = last.next;
+        if !next.is_null() {
+            (*next).back = back;
+        }
+        if !back.is_null() {
+            (*back).next = next;
+        }
+    }
 }
 
 pub struct RawChunkIter(*mut RawChunk);
@@ -258,6 +275,47 @@ impl Pool {
         raw_chunk.insert_in_list(last_free);
         self.free_last = raw_chunk_ptr;
     }
+
+    /// Get a `RawChunk` chain that can allocate the `layout`
+    /// # Safety
+    /// The `free` must be ordered and `layout.size` must need more than one chunk
+    pub unsafe fn get_free_chunk_chain_ordered(
+        &mut self,
+        chunk_size: usize,
+        chunk_align: usize,
+        layout: core::alloc::Layout,
+    ) -> *mut RawChunk {
+        let first = (*self.free_last).first();
+        let mut needed = layout.size();
+        let mut start: *mut RawChunk = null_mut();
+        let mut last: *mut RawChunk = null_mut();
+        for c in (*first).iter() {
+            if !start.is_null() && (*last).next == c {
+                last = c;
+                if needed <= chunk_size {
+                    (*start).slice_until(&mut *last);
+                    return start;
+                } else {
+                    needed -= chunk_size;
+                }
+            } else {
+                start = c;
+                last = c;
+                let aligned = crate::align_up(start as usize, layout.align());
+                needed = layout.size() - (aligned - (start as usize));
+            }
+        }
+        while needed > 0 {
+            last = (*last).alloc_next(&mut self.list_end, chunk_size, chunk_align);
+            if needed < chunk_size {
+                break;
+            }
+            needed -= chunk_size;
+        }
+        (*last).alloc_next(&mut self.list_end, chunk_size, chunk_align);
+        (*start).slice_until(&mut *last);
+        start
+    }
 }
 
 impl Alloq {
@@ -270,6 +328,11 @@ impl Alloq {
     ) -> Self {
         // SAFE: Its will not be even used as a `RawChunk`.
         let mut end = heap_range.end as *mut RawChunk;
+        assert!(
+            chunk_size > mem::size_of::<RawChunk>(),
+            "can't allocate any blocks (minimum > {})",
+            mem::size_of::<RawChunk>()
+        );
         let free_last = RawChunk::new(heap_range.start, align).allocate(&mut end, chunk_size);
         Self {
             heap_start: heap_range.start,
@@ -316,25 +379,29 @@ unsafe impl Allocator for Alloq {
     /// one.
     fn allocate(&self, layout: core::alloc::Layout) -> Result<NonNull<[u8]>, AllocError> {
         let chunk = {
-            let mut pooler = self.pooler.lock();
-            let chunk = pooler.get_free_chunk(self.chunk_size, layout.align());
-            unsafe { pooler.push_used(chunk) };
-            if unsafe {
-                (*chunk).addr.add(layout.size()) > (*chunk).chunk.add(self.chunk_size).cast_mut()
-            } {
-                todo!(
-                "layout (size {} bytes and align {} bytes) cannot be allocated in a chunk ({} bytes)",
-                layout.size(),
-                layout.align(),
-                self.chunk_size
-            );
+            {
+                let mut pooler = self.pooler.lock();
+                let chunk = pooler.get_free_chunk(self.chunk_size, layout.align());
+                if unsafe {
+                    (*chunk).addr.add(layout.size())
+                        > (*chunk).chunk.add(self.chunk_size).cast_mut()
+                } {
+                    unsafe {
+                        pooler.remove_used(chunk);
+                        let first = (*pooler.free_last).first();
+                        let first = &mut *(first as *mut RawChunk);
+                        first.sort();
+                        pooler.get_free_chunk_chain_ordered(self.chunk_size, self.align, layout)
+                    }
+                } else {
+                    debug_assert!(
+                        self.heap_range()
+                            .contains(unsafe { &(*chunk).chunk.cast_mut() }),
+                        "out of heap"
+                    );
+                    chunk
+                }
             }
-            debug_assert!(
-                self.heap_range()
-                    .contains(unsafe { &(*chunk).chunk.cast_mut() }),
-                "out of heap"
-            );
-            chunk
         };
         let ptr = unsafe { (*chunk).addr };
         let slice = unsafe {
@@ -632,5 +699,13 @@ pub mod tests {
                 last = p;
             }
         }
+    }
+
+    #[test]
+    fn tiny_chunk_allocation() {
+        let mut heap_stackish = [0u8; 1024];
+        let alloqer = unsafe { Alloq::with_chunk_size(heap_stackish.as_mut_ptr_range(), 48, 2) };
+        let v: Vec<_> = (0..10).map(|x| Box::new_in(x, &alloqer)).collect();
+        assert!(v.iter().enumerate().all(|(i, x)| **x == i));
     }
 }
