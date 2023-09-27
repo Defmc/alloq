@@ -54,6 +54,10 @@ impl Alloqator for Alloq {
         let mut start = self.heap_start as *mut u8;
         let mut end = self.heap_start as *mut u8;
         let obj_size = (layout.size() + core::mem::size_of::<AlloqMetaData>()) as isize;
+        let is_aligned = |p: *mut u8| {
+            (p as usize) % (layout.align() + mem::size_of::<AlloqMetaData>()) == 0
+                && p.is_aligned_to(mem::align_of::<AlloqMetaData>())
+        };
         loop {
             if *end != 0 {
                 let metadata = end as *const AlloqMetaData;
@@ -61,17 +65,10 @@ impl Alloqator for Alloq {
                 start = end;
             }
             end = end.offset(1);
-            if !start.is_aligned_to(layout.align())
-                || !start.is_aligned_to(core::mem::align_of::<AlloqMetaData>())
-                    && end.is_aligned_to(layout.align())
-                    && end.is_aligned_to(core::mem::align_of::<AlloqMetaData>())
-            {
+            if !is_aligned(start) && is_aligned(end) {
                 start = end;
             }
-            if end.offset_from(start) >= obj_size
-                && start.is_aligned_to(layout.align())
-                && start.is_aligned_to(core::mem::align_of::<AlloqMetaData>())
-            {
+            if end.offset_from(start) >= obj_size && is_aligned(start) {
                 return AlloqMetaData::new(layout.size()).write_meta(start as *mut u8);
             }
             if end as *const u8 >= self.heap_end {
@@ -93,31 +90,10 @@ impl Alloqator for Alloq {
 
 crate::impl_allocator!(Alloq);
 
-// TODO: Create a AlloqIter
-// impl Alloq {
-//     pub unsafe fn log_allocations(&self, w: impl Write) {
-//         let mut idx = self.heap_start;
-//         while idx < self.heap_end {
-//             if *idx != 0 {
-//                 let md = AlloqMetaData::new(idx as usize);
-//                 println!("allocation founded");
-//                 println!("\tstart: {idx:?}");
-//                 println!("\tend: {:?}", idx.offset(md.size as isize));
-//                 println!(
-//                     "\tsize: {} ({} from metadata)",
-//                     md.total_size(),
-//                     core::mem::size_of::<AlloqMetaData>()
-//                 );
-//                 idx = idx.offset(md.total_size() as isize);
-//             }
-//             idx = idx.offset(1);
-//         }
-//     }
-// }
-
 #[cfg(test)]
 pub mod tests {
-    use crate::list::{Alloq, Alloqator};
+    use super::Alloq;
+    use crate::Alloqator;
     extern crate alloc;
     use alloc::{boxed::Box, vec::Vec};
 
@@ -145,6 +121,22 @@ pub mod tests {
         assert_ne!(b_ptr, c_ptr);
     }
 
+    #[test]
+    fn fragmented_heap() {
+        let heap_stackish = [0u8; 1024 * 1024];
+        let alloqer = Alloq::new(heap_stackish.as_ptr_range());
+        let mut v: Vec<u8, _> = Vec::new_in(&alloqer);
+        let mut w: Vec<u8, _> = Vec::new_in(&alloqer);
+        for x in 0..128 {
+            match x % 2 {
+                0 => v.push(x),
+                1 => w.push(x),
+                _ => unreachable!(),
+            }
+        }
+        assert!(v.iter().all(|i| i % 2 == 0));
+        assert!(w.iter().all(|i| i % 2 == 1));
+    }
     #[test]
     fn custom_structs() {
         struct S {
@@ -179,8 +171,9 @@ pub mod tests {
     fn full_heap() {
         use core::mem::size_of;
         const VECTOR_SIZE: usize = 16;
-        let heap_stackish =
-            [0u8; (size_of::<crate::AlloqMetaData>() + size_of::<[u16; 32]>()) * VECTOR_SIZE];
+        let heap_stackish = [0u8; (size_of::<<Alloq as Alloqator>::Metadata>()
+            + size_of::<[u16; 32]>())
+            * VECTOR_SIZE];
         let alloqer = Alloq::new(heap_stackish.as_ptr_range());
         let mut v = Vec::with_capacity_in(VECTOR_SIZE, &alloqer);
         for x in 0..VECTOR_SIZE {
