@@ -27,7 +27,7 @@ impl Alloqator for Alloq {
     }
 
     #[inline(always)]
-    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
         let mut start = self.heap_start as *mut u8;
         let mut end = self.heap_start as *mut u8;
         let obj_size = (layout.size() + core::mem::size_of::<AlloqMetaData>()) as isize;
@@ -58,7 +58,7 @@ impl Alloqator for Alloq {
     }
 
     #[inline(always)]
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
         let offset = ptr.offset(-(core::mem::size_of::<AlloqMetaData>() as isize));
         slice::from_raw_parts_mut(
             offset,
@@ -70,30 +70,33 @@ impl Alloqator for Alloq {
 
 crate::impl_allocator!(Alloq);
 
-impl Alloq {
-    pub unsafe fn log_allocations(&self) {
-        let mut idx = self.heap_start;
-        while idx < self.heap_end {
-            if *idx != 0 {
-                let md = AlloqMetaData::new(idx as usize);
-                println!("allocation founded");
-                println!("\tstart: {idx:?}");
-                println!("\tend: {:?}", idx.offset(md.size as isize));
-                println!(
-                    "\tsize: {} ({} from metadata)",
-                    md.total_size(),
-                    core::mem::size_of::<AlloqMetaData>()
-                );
-                idx = idx.offset(md.total_size() as isize);
-            }
-            idx = idx.offset(1);
-        }
-    }
-}
+// TODO: Create a AlloqIter
+// impl Alloq {
+//     pub unsafe fn log_allocations(&self, w: impl Write) {
+//         let mut idx = self.heap_start;
+//         while idx < self.heap_end {
+//             if *idx != 0 {
+//                 let md = AlloqMetaData::new(idx as usize);
+//                 println!("allocation founded");
+//                 println!("\tstart: {idx:?}");
+//                 println!("\tend: {:?}", idx.offset(md.size as isize));
+//                 println!(
+//                     "\tsize: {} ({} from metadata)",
+//                     md.total_size(),
+//                     core::mem::size_of::<AlloqMetaData>()
+//                 );
+//                 idx = idx.offset(md.total_size() as isize);
+//             }
+//             idx = idx.offset(1);
+//         }
+//     }
+// }
 
 #[cfg(test)]
 pub mod tests {
     use crate::list::{Alloq, Alloqator};
+    extern crate alloc;
+    use alloc::{boxed::Box, vec::Vec};
 
     #[test]
     fn vec_grow() {

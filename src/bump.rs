@@ -70,6 +70,8 @@ crate::impl_allocator!(Alloq);
 #[cfg(test)]
 pub mod tests {
     use crate::bump::{Alloq, Alloqator};
+    extern crate alloc;
+    use alloc::{boxed::Box, vec::Vec};
 
     #[test]
     fn vec_grow() {
