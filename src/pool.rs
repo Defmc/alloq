@@ -683,7 +683,7 @@ pub mod tests {
         let mut heap_stackish = [0; 1024];
         let alloqer = Alloq::new(heap_stackish.as_mut_ptr_range());
         let vec: Vec<_> = (0..5).map(|_| alloqer.alloq(Layout::new::<()>())).collect();
-        for p in vec {
+        for p in vec.iter().rev().cloned() {
             unsafe { alloqer.dealloq(p, Layout::new::<()>()) }
         }
         unsafe {
@@ -705,7 +705,19 @@ pub mod tests {
     fn tiny_chunk_allocation() {
         let mut heap_stackish = [0u8; 1024];
         let alloqer = unsafe { Alloq::with_chunk_size(heap_stackish.as_mut_ptr_range(), 48, 2) };
-        let v: Vec<_> = (0..10).map(|x| Box::new_in(x, &alloqer)).collect();
-        assert!(v.iter().enumerate().all(|(i, x)| **x == i));
+        let v: Vec<_> = (0..10u128).map(|x| Box::new_in(x, &alloqer)).collect();
+        assert!(v.iter().enumerate().all(|(i, x)| **x == i as u128));
+    }
+
+    #[test]
+    fn tiny_chunk_unsorted_allocation() {
+        let mut heap_stackish = [0u8; 1024];
+        let alloqer = unsafe { Alloq::with_chunk_size(heap_stackish.as_mut_ptr_range(), 48, 2) };
+        let vec: Vec<_> = (0..5).map(|_| alloqer.alloq(Layout::new::<()>())).collect();
+        for p in vec.iter().rev().cloned() {
+            unsafe { alloqer.dealloq(p, Layout::new::<()>()) }
+        }
+        let v: Vec<_> = (0..10u128).map(|x| Box::new_in(x, &alloqer)).collect();
+        assert!(v.iter().enumerate().all(|(i, x)| **x == i as u128));
     }
 }
