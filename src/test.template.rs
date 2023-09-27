@@ -163,3 +163,27 @@ fn zero_sized() {
     assert_eq!(*b, ());
     assert_eq!(v.len(), VECTOR_SIZE);
 }
+
+#[test]
+fn vector_fragmented() {
+    const VECTOR_SIZE: usize = 128;
+    let heap_stackish = [0u8; 1024 * 30];
+    let alloqer = Alloq::new(heap_stackish.as_ptr_range());
+    let mut v1 = Vec::with_capacity_in(VECTOR_SIZE, &alloqer);
+    let mut v2 = Vec::with_capacity_in(VECTOR_SIZE, &alloqer);
+    let mut v3 = Vec::with_capacity_in(VECTOR_SIZE, &alloqer);
+    for x in 0..VECTOR_SIZE as isize {
+        if x % 2 == 0 {
+            v2.push(x);
+        } else {
+            v1.push(x);
+        }
+        v3.push(-x);
+    }
+    assert!(v1.iter().all(|x| x % 2 == 1));
+    assert!(v2.iter().all(|x| x % 2 == 0));
+    assert_eq!(
+        v1.iter().chain(v2.iter()).sum::<isize>(),
+        -v3.iter().sum::<isize>()
+    )
+}
