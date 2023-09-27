@@ -4,6 +4,7 @@
 
 use core::{
     alloc::Layout,
+    mem,
     ops::Range,
     ptr::{null, NonNull},
 };
@@ -77,10 +78,8 @@ pub trait Alloqator {
     ) -> Result<core::ptr::NonNull<[u8]>, core::alloc::AllocError> {
         extern crate std;
         let p = unsafe { self.alloc(layout) };
-        std::println!("allocated");
         let slice = unsafe { core::slice::from_raw_parts_mut(p, layout.size()) };
-        std::println!("sliced");
-        Ok(NonNull::new(slice).expect("oh null pointer"))
+        NonNull::new(slice).ok_or(core::alloc::AllocError)
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: core::alloc::Layout) {
@@ -88,6 +87,18 @@ pub trait Alloqator {
     }
 }
 
+const fn get_size_hint_in<T, A: Alloqator>(count: usize) -> usize {
+    const fn max(x: usize, y: usize) -> usize {
+        if x > y {
+            x
+        } else {
+            y
+        }
+    }
+    let meta_align = max(mem::align_of::<A::Metadata>(), 1);
+    let obj_align = max(mem::align_of::<A::Metadata>(), 1);
+    (mem::size_of::<T>() + obj_align - 1 + mem::size_of::<A::Metadata>() + meta_align - 1) * count
+}
 #[macro_export]
 macro_rules! impl_allocator {
     ($typ:ty) => {
