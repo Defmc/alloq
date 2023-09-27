@@ -50,7 +50,7 @@ pub struct Alloq {
 }
 
 impl Alloqator for Alloq {
-    type Metadata = ();
+    type Metadata = AlloqMetaData;
 
     fn new(heap_range: Range<*const u8>) -> Self {
         Self {
