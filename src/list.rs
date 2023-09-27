@@ -33,24 +33,25 @@ impl AlloqMetaData {
             aligned_meta.offset(mem::size_of::<Self>() as isize) as usize,
             layout.align(),
         ) as *mut u8;
-        let mut s = Self {
+        let s = Self {
             end: aligned_val.offset(layout.size() as isize),
             next: ptr::null_mut(),
             back: list,
         };
         assert!(
-            aligned_val.offset(layout.size() as isize) as *const u8 <= range.end,
+            aligned_val.offset(layout.size() as isize).cast_const() <= range.end,
             "no available memory"
         );
-        let s_ptr = s.write(aligned_meta) as *mut Self;
+        let s_ptr = s.write(aligned_meta);
         if !list.is_null() {
             Self::connect_unchecked(list.as_mut().unwrap(), s_ptr.as_mut().unwrap());
         }
-        (s, s.write(aligned_meta) as *mut Self)
+        (s, s_ptr)
     }
-    pub unsafe fn write(&self, ptr: *mut u8) -> *mut u8 {
-        *(ptr as *mut Self) = *self;
-        ptr as *mut u8
+    pub unsafe fn write(&self, ptr: *mut u8) -> *mut Self {
+        let ptr = ptr.cast::<Self>();
+        *ptr = *self;
+        ptr
     }
 
     pub fn disconnect(&mut self) {
@@ -114,7 +115,7 @@ pub trait AllocMethod {
             .iter()
             .find(|&n| unsafe { *n }.end == end)
             .expect("use after free");
-        unsafe { *(node as *mut AlloqMetaData) }.disconnect();
+        unsafe { *node.cast_mut() }.disconnect();
     }
 }
 
@@ -126,12 +127,12 @@ impl AllocMethod for FirstFit {
     ) -> *mut AlloqMetaData {
         for node_ptr in first.iter() {
             let node = unsafe { *node_ptr };
-            let obj_end = AlloqMetaData::end_of_allocation(node.end as *mut u8, layout);
+            let obj_end = AlloqMetaData::end_of_allocation(node.end.cast_mut(), layout);
             if node.next.is_null() {
                 // TODO: Check if don't overflow heap
-                return node_ptr as *mut AlloqMetaData;
-            } else if obj_end <= node.next as *mut u8 {
-                return node_ptr as *mut AlloqMetaData;
+                return node_ptr.cast_mut();
+            } else if obj_end <= node.next.cast() {
+                return node_ptr.cast_mut();
             }
         }
         panic!("no available memory");
@@ -157,8 +158,8 @@ impl AllocMethod for BestFit {
         for node_ptr in first.iter() {
             let node = unsafe { *node_ptr };
             let obj_end = AlloqMetaData::end_of_allocation(node.end as *mut u8, layout);
-            if obj_end <= node.next as *mut u8 {
-                let disp = unsafe { (node.next as *mut u8).offset_from(obj_end) } as usize;
+            if obj_end <= node.next.cast() {
+                let disp = unsafe { (node.next.cast::<u8>()).offset_from(obj_end) } as usize;
                 // Get dispersion from `back` also
                 if disp < dispersion {
                     best = node_ptr as *mut AlloqMetaData;
@@ -194,11 +195,7 @@ unsafe impl<A: AllocMethod> Allocator for Alloq<A> {
         let mut lock = self.first.lock();
         let ptr = if lock.0.is_null() {
             let meta = unsafe {
-                AlloqMetaData::allocate(
-                    ptr::null_mut() as *mut AlloqMetaData,
-                    self.heap_range(),
-                    layout,
-                )
+                AlloqMetaData::allocate(ptr::null_mut::<AlloqMetaData>(), self.heap_range(), layout)
             };
             unsafe {
                 lock.0 = meta.1;
@@ -213,13 +210,17 @@ unsafe impl<A: AllocMethod> Allocator for Alloq<A> {
                 meta.0.end.offset(-(layout.size() as isize))
             }
         };
-        let slice = unsafe { slice::from_raw_parts_mut(ptr as *mut u8, layout.size()) };
+        let slice = unsafe { slice::from_raw_parts_mut(ptr.cast_mut(), layout.size()) };
         NonNull::new(slice).ok_or(AllocError)
     }
 
     unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: core::alloc::Layout) {
-        let mut lock = self.first.lock();
-        A::remove((&mut *lock.0, &mut *lock.1), ptr.as_ptr(), layout);
+        let lock = self.first.lock();
+        A::remove(
+            (lock.0.as_mut().unwrap(), lock.1.as_mut().unwrap()),
+            ptr.as_ptr(),
+            layout,
+        );
     }
 }
 
