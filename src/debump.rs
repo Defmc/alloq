@@ -91,9 +91,9 @@ impl Alloqator for Alloq {
         md
     }
 
-/// Set the `ptr` metadata as unused. If it's on the top of stack, starts to deallocate (return the
-/// stack pointer to `last_meta`) all the
-/// last areas marked as unused
+    /// Set the `ptr` metadata as unused. If it's on the top of stack, starts to deallocate (return the
+    /// stack pointer to `last_meta`) all the
+    /// last areas marked as unused
     #[inline(always)]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         let mut lock = *self.iter.lock();
