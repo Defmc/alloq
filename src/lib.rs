@@ -14,6 +14,9 @@ pub mod debump;
 //#[cfg(feature = "pool")]
 pub mod pool;
 
+//#[cfg(feature = "static")]
+pub mod statiq;
+
 pub const fn align_up(addr: usize, align: usize) -> usize {
     // Since align is a power of two, its binary representation has only a single bit set (e.g. 0b000100000). This means that align - 1 has all the lower bits set (e.g. 0b00011111).
     // By creating the bitwise NOT through the ! operator, we get a number that has all the bits set except for the bits lower than align (e.g. 0b…111111111100000).
