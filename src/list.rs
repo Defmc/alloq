@@ -36,14 +36,15 @@ impl AlloqMetaData {
         let mut s = Self {
             end: aligned_val.offset(layout.size() as isize),
             next: ptr::null_mut(),
-            back: ptr::null_mut(),
+            back: list,
         };
         assert!(
             aligned_val.offset(layout.size() as isize) as *const u8 <= range.end,
             "no available memory"
         );
+        let s_ptr = s.write(aligned_meta) as *mut Self;
         if !list.is_null() {
-            Self::connect_unchecked(&mut (*list), &mut s);
+            Self::connect_unchecked(list.as_mut().unwrap(), s_ptr.as_mut().unwrap());
         }
         (s, s.write(aligned_meta) as *mut Self)
     }
