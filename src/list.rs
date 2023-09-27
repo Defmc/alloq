@@ -1,6 +1,5 @@
 use core::{
     alloc::{AllocError, Allocator, Layout},
-    cmp,
     marker::PhantomData,
     mem,
     ops::Range,
@@ -108,18 +107,13 @@ pub trait AllocMethod {
         ptr: *mut u8,
         layout: Layout,
     ) {
-        extern crate std;
         let end = unsafe { ptr.offset(layout.size() as isize) };
         let node = first_and_end
             .0
             .iter()
-            .find(|&n| {
-                std::println!("comparing {:?} and {end:?}", unsafe { *n }.end);
-                unsafe { *n }.end == end
-            })
+            .find(|&n| unsafe { *n }.end == end)
             .expect("use after free");
-        std::println!("matched");
-        unsafe { &mut *(node as *mut AlloqMetaData) }.disconnect();
+        unsafe { *(node as *mut AlloqMetaData) }.disconnect();
     }
 }
 
@@ -176,7 +170,7 @@ impl AllocMethod for BestFit {
         if best.is_null() {
             end
         } else {
-            assert!(align.is_null(), "extern modification");
+            assert!(!align.is_null(), "extern modification");
             best
         }
     }
@@ -241,6 +235,12 @@ impl<A: AllocMethod> Alloqator for Alloq<A> {
             first: (ptr::null_mut(), ptr::null_mut()).into(),
             _marker: PhantomData,
         }
+    }
+
+    fn reset(&self) {
+        let mut lock = self.first.lock();
+        lock.0 = ptr::null_mut();
+        lock.1 = ptr::null_mut();
     }
 
     fn heap_start(&self) -> *const u8 {

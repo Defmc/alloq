@@ -10,8 +10,8 @@ fn simple_alloc() {
     let heap = [0u8; 512 * 8];
     let alloqer = Alloq::new(heap.as_ptr_range());
     let layout = Layout::from_size_align(32, 2).unwrap();
-    let ptr = alloqer.alloc(layout);
-    unsafe { alloqer.dealloc(ptr, layout) };
+    let ptr = alloqer.alloq(layout);
+    unsafe { alloqer.dealloq(ptr, layout) };
 }
 
 #[test]
@@ -21,11 +21,11 @@ fn linear_allocs() {
     let layout = Layout::from_size_align(32, 2).unwrap();
     let mut chunks_allocated = [null_mut(); 4];
     for chunk in chunks_allocated.iter_mut() {
-        *chunk = alloqer.alloc(layout);
+        *chunk = alloqer.alloq(layout);
     }
 
     for &mut chunk in chunks_allocated.iter_mut() {
-        unsafe { alloqer.dealloc(chunk, layout) }
+        unsafe { alloqer.dealloq(chunk, layout) }
     }
 }
 
@@ -36,11 +36,11 @@ fn stack_allocs() {
     let layout = Layout::from_size_align(32, 2).unwrap();
     let mut chunks_allocated = [null_mut(); 4];
     for chunk in chunks_allocated.iter_mut() {
-        *chunk = alloqer.alloc(layout);
+        *chunk = alloqer.alloq(layout);
     }
 
     for &mut chunk in chunks_allocated.iter_mut().rev() {
-        unsafe { alloqer.dealloc(chunk, layout) }
+        unsafe { alloqer.dealloq(chunk, layout) }
     }
 }
 
@@ -55,13 +55,13 @@ fn multithread_allocs() {
     let thread = thread::spawn(|| {
         let layout = Layout::new::<i32>();
         for _ in 0..100 {
-            let ptr = unsafe { ALLOQER.assume_init_mut().alloc(layout) };
-            unsafe { ALLOQER.assume_init_mut().dealloc(ptr, layout) };
+            let ptr = unsafe { ALLOQER.assume_init_mut().alloq(layout) };
+            unsafe { ALLOQER.assume_init_mut().dealloq(ptr, layout) };
         }
     });
     for _ in 0..100 {
-        let ptr = unsafe { ALLOQER.assume_init_mut().alloc(layout) };
-        unsafe { ALLOQER.assume_init_mut().dealloc(ptr, layout) };
+        let ptr = unsafe { ALLOQER.assume_init_mut().alloq(layout) };
+        unsafe { ALLOQER.assume_init_mut().dealloq(ptr, layout) };
     }
     thread.join().unwrap();
 }

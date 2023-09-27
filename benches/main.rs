@@ -2,7 +2,7 @@
 #![feature(type_name_of_val)]
 
 use std::{
-    alloc::{Allocator, Layout},
+    alloc::Layout,
     collections::hash_map::DefaultHasher,
     fs::{self, File},
     hash::{Hash, Hasher},
@@ -11,13 +11,10 @@ use std::{
     time::{self, Duration, Instant, SystemTime},
 };
 
-use alloq::{bump, debump, pool, Alloqator};
+use alloq::{bump, debump, list::best, list::first, pool, statiq, Alloqator};
 
 pub const HEAP_SIM_SIZE: usize = 1024 * 1024 * 1024;
-pub static mut HEAP_SIM_BUMP: [u8; HEAP_SIM_SIZE] = [0u8; HEAP_SIM_SIZE];
-pub static mut HEAP_SIM_DEBUMP: [u8; HEAP_SIM_SIZE] = [0u8; HEAP_SIM_SIZE];
-pub static mut HEAP_SIM_POOL: [u8; HEAP_SIM_SIZE] = [0u8; HEAP_SIM_SIZE];
-// pub static mut HEAP_SIM_LIST: [u8; HEAP_SIM_SIZE] = [0u8; HEAP_SIM_SIZE];
+pub static mut HEAP_SIM: [u8; HEAP_SIM_SIZE] = [0u8; HEAP_SIM_SIZE];
 pub const TEST_COUNT: usize = 10_usize.pow(3);
 
 fn get_time(f: impl FnOnce()) -> Duration {
@@ -32,7 +29,7 @@ fn test_and_clear(a: &impl Alloqator, f: impl FnOnce()) -> Duration {
     time
 }
 
-macro_rules! run_test {
+macro_rules! unit_bench {
     ($dir:expr, $name:expr, $($alloq:expr),*) => {{
         let file = File::create(format!("{}/{}.csv", $dir, stringify!($name))).unwrap();
         let mut w = BufWriter::new(file);
@@ -43,13 +40,24 @@ macro_rules! run_test {
         println!("benchmarking {}", stringify!($name));
         for n in (0..=TEST_COUNT).step_by(10) {
             write!(w, "{n}, ").unwrap();
-            let ts = [$($name($alloq, n),)*];
-            for t in ts {
+            $(
+                let t = $name($alloq, n);
                 write!(w, "{}, ", t.as_nanos()).unwrap();
-            }
+            )*
             writeln!(w, "").unwrap();
         }
     }};
+}
+
+macro_rules! run_benches {
+    ($dir:expr, $($alloq:expr),*) => {
+        unit_bench!($dir, linear_allocation, $($alloq),*);
+        unit_bench!($dir, linear_deallocation, $($alloq),*);
+        unit_bench!($dir, reverse_deallocation, $($alloq),*);
+        unit_bench!($dir, vector_pushing, $($alloq),*);
+        unit_bench!($dir, vector_fragmentation, $($alloq),*);
+        unit_bench!($dir, reset, $($alloq),*);
+    };
 }
 
 fn main() {
@@ -63,28 +71,25 @@ fn main() {
 
     println!("preparing alloqators");
 
-    let bump = bump::Alloq::new(unsafe { HEAP_SIM_BUMP.as_ptr_range() });
-    let debump = debump::Alloq::new(unsafe { HEAP_SIM_DEBUMP.as_ptr_range() });
-    let pool = unsafe {
-        pool::Alloq::with_chunk_size(HEAP_SIM_POOL.as_ptr_range(), HEAP_SIM_SIZE / 1024, 2)
-    };
+    let bump = bump::Alloq::new(unsafe { HEAP_SIM.as_ptr_range() });
+    let debump = debump::Alloq::new(unsafe { HEAP_SIM.as_ptr_range() });
+    let pool =
+        unsafe { pool::Alloq::with_chunk_size(HEAP_SIM.as_ptr_range(), HEAP_SIM_SIZE / 1024, 2) };
+    let first = first::Alloq::new(unsafe { HEAP_SIM.as_ptr_range() });
+    let best = best::Alloq::new(unsafe { HEAP_SIM.as_ptr_range() });
+    let statiq = statiq::Alloq::new(unsafe { HEAP_SIM.as_ptr_range() });
 
     println!("running benchmarks");
-    run_test!(dir, linear_allocation, &bump, &debump, &pool);
-    run_test!(dir, linear_deallocation, &bump, &debump, &pool);
-    run_test!(dir, reverse_deallocation, &bump, &debump, &pool);
-    run_test!(dir, vector_pushing, &bump, &debump, &pool);
-    run_test!(dir, vector_fragmentation, &bump, &debump, &pool);
-    run_test!(dir, reset, &bump, &debump, &pool);
+    run_benches!(dir, &bump, &debump, &pool, &first, &best, &statiq);
     println!("benchmarks results saved on {dir}");
 }
 
-fn linear_allocation(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
+fn linear_allocation<A: Alloqator>(a: &A, n: usize) -> Duration {
     let layout = Layout::from_size_align(32, 2).unwrap();
     let mut v = Vec::with_capacity(n);
     let t = test_and_clear(a, || {
         for _x in 0..n {
-            v.push(a.alloc(layout));
+            v.push(a.alloq(layout));
         }
     });
     assert!(
@@ -95,27 +100,27 @@ fn linear_allocation(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
     t
 }
 
-fn linear_deallocation(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
+fn linear_deallocation<A: Alloqator>(a: &A, n: usize) -> Duration {
     let layout = Layout::from_size_align(32, 2).unwrap();
-    let ptrs: Vec<_> = (0..n).map(|_| a.alloc(layout)).collect();
+    let ptrs: Vec<_> = (0..n).map(|_| a.alloq(layout)).collect();
     test_and_clear(a, || {
         for ptr in ptrs {
-            unsafe { a.dealloc(ptr.clone(), layout) };
+            unsafe { a.dealloq(ptr.clone(), layout) };
         }
     })
 }
 
-fn reverse_deallocation(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
+fn reverse_deallocation<A: Alloqator>(a: &A, n: usize) -> Duration {
     let layout = Layout::from_size_align(32, 2).unwrap();
-    let ptrs: Vec<_> = (0..n).map(|_| a.alloc(layout)).collect();
+    let ptrs: Vec<_> = (0..n).map(|_| a.alloq(layout)).collect();
     test_and_clear(a, || {
         for ptr in ptrs.iter().rev() {
-            unsafe { a.dealloc(ptr.clone(), layout) };
+            unsafe { a.dealloq(ptr.clone(), layout) };
         }
     })
 }
 
-fn vector_pushing(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
+fn vector_pushing<A: Alloqator>(a: &A, n: usize) -> Duration {
     let mut v = Vec::new_in(a);
     let t = test_and_clear(a, || {
         for x in 0..n {
@@ -131,11 +136,11 @@ fn vector_pushing(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
     t
 }
 
-fn reset(a: &(impl Allocator + Alloqator), _n: usize) -> Duration {
+fn reset<A: Alloqator>(a: &A, _n: usize) -> Duration {
     test_and_clear(a, || a.reset())
 }
 
-fn vector_fragmentation(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
+fn vector_fragmentation<A: Alloqator>(a: &A, n: usize) -> Duration {
     let mut v1 = Vec::new_in(a);
     let mut v2 = Vec::new_in(a);
     let mut v3 = Vec::new_in(a);

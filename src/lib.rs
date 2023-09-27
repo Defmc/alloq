@@ -50,15 +50,7 @@ pub trait Alloqator: Allocator {
     where
         Self: Sized;
 
-    fn reset(&self) {
-        unsafe {
-            core::slice::from_raw_parts_mut(
-                self.heap_start() as *mut u8,
-                self.heap_end().offset_from(self.heap_start()) as usize,
-            )
-            .fill(0)
-        }
-    }
+    fn reset(&self);
 
     fn heap_start(&self) -> *const u8;
     fn heap_end(&self) -> *const u8;
@@ -66,11 +58,11 @@ pub trait Alloqator: Allocator {
         self.heap_start()..self.heap_end()
     }
 
-    fn alloc(&self, layout: Layout) -> *mut u8 {
+    fn alloq(&self, layout: Layout) -> *mut u8 {
         unsafe { (*self.allocate(layout).unwrap().as_ptr()).as_ptr() as *mut u8 }
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+    unsafe fn dealloq(&self, ptr: *mut u8, layout: Layout) {
         self.deallocate(NonNull::new(ptr).unwrap(), layout);
     }
 }
