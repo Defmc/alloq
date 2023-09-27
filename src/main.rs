@@ -15,7 +15,7 @@ use alloq::{
 
 const HEAP_SIZE: usize = 1024 * 1024 * 1024;
 
-const TEST_COUNT: usize = 100;
+const TEST_COUNT: usize = 500;
 
 static mut HEAP: [u8; HEAP_SIZE] = [0u8; HEAP_SIZE];
 
@@ -27,6 +27,18 @@ fn get_time(f: impl FnOnce()) -> u128 {
     (end - start).as_nanos()
 }
 
+macro_rules! run_test {
+    ($name:expr, $f:tt, $($alloc:tt),*) => {{
+        println!("{} (ns)", $name);
+        println!("count, bump, debump, pool, list");
+        for n in (0..TEST_COUNT).step_by(10) {
+            print!("{n}, ");
+            $($f(&mut $alloc, n);)*
+            println!("");
+        }
+    }};
+}
+
 fn main() {
     println!("benchmarking");
 
@@ -35,62 +47,91 @@ fn main() {
     let mut pool = unsafe { Pool::with_chunk_size(HEAP.as_ptr_range(), TEST_COUNT * 32, 2) };
     //    let mut list = List::new(unsafe { HEAP.as_ptr_range() });
 
-    println!("alloq, count, linear_allocation (ns), linear_deallocation (ns), stack_like_deallocation (ns), vector_pushing (ns), reset (ns)");
-
-    for n in 0..TEST_COUNT {
-        test_alloq(&mut bump, n);
-        test_alloq(&mut debump, n);
-        test_alloq(&mut pool, n);
-        //test_alloq(&mut bump, n);
-    }
+    run_test!("linear_allocation", linear_allocation, bump, debump, pool);
+    run_test!(
+        "linear_deallocation",
+        linear_deallocation,
+        bump,
+        debump,
+        pool
+    );
+    run_test!(
+        "stack_like_deallocation",
+        stack_like_deallocation,
+        bump,
+        debump,
+        pool
+    );
+    run_test!(
+        "vector_pushing",
+        stack_like_deallocation,
+        bump,
+        debump,
+        pool
+    );
+    run_test!("reset", stack_like_deallocation, bump, debump, pool);
 }
 
-fn test_alloq(a: &mut (impl Alloqator + Allocator), n: usize) {
-    print!("{}, {n}, ", any::type_name_of_val(a));
-    let mut ptrs: Vec<_> = (0..n).map(|_| ptr::null_mut()).collect();
-    let layout = Layout::from_size_align(8, 2).unwrap();
-
+fn linear_allocation(a: &mut (impl Alloqator + Allocator), n: usize) {
+    let layout = Layout::from_size_align(32, 2).unwrap();
     print!(
         "{}, ",
         get_time(|| {
-            for ptr in ptrs.iter_mut() {
-                *ptr = unsafe { a.alloc(layout) };
+            for _ in 0..TEST_COUNT {
+                unsafe { a.alloc(layout) };
             }
         })
     );
+    a.reset();
+}
 
-    print!(
-        "{}, ",
-        get_time(|| {
-            for ptr in &ptrs {
-                unsafe { a.dealloc(*ptr, layout) };
-            }
-        })
-    );
-
-    for ptr in ptrs.iter_mut() {
-        *ptr = unsafe { a.alloc(layout) };
+fn linear_deallocation(a: &mut (impl Alloqator + Allocator), n: usize) {
+    let layout = Layout::from_size_align(32, 2).unwrap();
+    let mut v = Vec::with_capacity(n);
+    for e in v.iter_mut() {
+        *e = unsafe { a.alloc(layout) };
     }
     print!(
         "{}, ",
         get_time(|| {
-            for ptr in ptrs.iter().rev() {
-                unsafe { a.dealloc(*ptr, layout) };
+            for e in v.iter() {
+                unsafe { a.dealloc(*e, layout) };
             }
         })
     );
+    a.reset();
+}
 
+fn stack_like_deallocation(a: &mut (impl Alloqator + Allocator), n: usize) {
+    let layout = Layout::from_size_align(32, 2).unwrap();
+    let mut v = Vec::with_capacity(n);
+    for e in v.iter_mut() {
+        *e = unsafe { a.alloc(layout) };
+    }
     print!(
         "{}, ",
         get_time(|| {
-            let mut v = Vec::new_in(&*a);
+            for e in v.iter().rev() {
+                unsafe { a.dealloc(*e, layout) };
+            }
+        })
+    );
+    a.reset();
+}
+
+fn vector_pushing(a: &mut (impl Alloqator + Allocator), n: usize) {
+    let mut v = Vec::new_in(&*a);
+    print!(
+        "{}, ",
+        get_time(|| {
             for x in 0..n {
                 v.push(x);
             }
         })
     );
+    a.reset();
+}
 
-    print!("{}", get_time(|| a.reset()));
-
-    println!("");
+fn reset(a: &mut (impl Alloqator + Allocator), n: usize) {
+    print!("{}, ", get_time(|| { a.reset() }));
 }
