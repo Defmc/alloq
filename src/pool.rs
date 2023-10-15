@@ -25,6 +25,7 @@ impl RawChunk {
 
     pub unsafe fn allocate<'a>(&self, end: *mut u8) -> *mut Self {
         let alignment = (end as usize) % mem::size_of::<Self>();
+        // TODO: Align it
         let ptr = end.offset(-(mem::size_of::<Self>() as isize));
         let ptr = ptr as *mut Self;
         *ptr = self.clone();
@@ -58,7 +59,6 @@ impl RawChunk {
             next,
             next.offset(mem::size_of::<Self>() as isize)
         );
-        std::println!("setting {list_end:?} -> {next:?}");
         *list_end = next;
         Self::connect_unchecked(self, &mut *next);
         next
@@ -67,8 +67,6 @@ impl RawChunk {
     pub unsafe fn disconnect(&mut self) {
         let next = self.next;
         let back = self.back;
-        std::println!("\t\tnext: {:?}", next);
-        std::println!("\t\tback: {:?}", back);
         if !self.back.is_null() {
             (*back).next = next;
         }
@@ -77,7 +75,6 @@ impl RawChunk {
         }
         self.next = null_mut();
         self.back = null_mut();
-        std::println!("\t\treturning");
     }
 
     pub unsafe fn insert_in_list(&mut self, back: &mut RawChunk) {
@@ -92,8 +89,7 @@ impl RawChunk {
     pub unsafe fn connect(back: &mut Self, next: &mut Self) {
         assert!(back.next.is_null());
         assert!(next.back.is_null());
-        back.next = next as *mut Self;
-        next.back = back as *mut Self;
+        Self::connect_unchecked(back, next);
     }
 
     pub unsafe fn connect_unchecked(back: &mut Self, next: &mut Self) {
@@ -152,18 +148,12 @@ impl Pool {
 
     pub unsafe fn get_free_chunk(&mut self) -> *mut RawChunk {
         let last = &mut *self.free_last;
-        std::println!("\tfree_last: {:?} -> {last:?}", last as *mut RawChunk);
         let freed = if last.next.is_null() {
-            std::println!("\tallocating raw chunk");
             &mut *last.alloc_next(&mut self.list_end, self.chunk_size)
         } else {
-            std::println!("\tusing previous raw chunk");
             &mut *last.next
         };
-        std::println!("\tfreed: {:?} -> {freed:?}", freed as *mut RawChunk);
-        std::println!("\tdisconnecting freed");
         freed.disconnect();
-        std::println!("\treturning freed: {freed:?}");
         freed
     }
 
@@ -175,26 +165,20 @@ impl Pool {
             self.used_last = raw_chunk;
         } else {
             let last = &mut *self.used_last;
-            std::println!("setting used last: {:?} -> {last:?}", self.used_last);
             if !last.next.is_null() {
                 panic!("there's a `next` in `used_last`");
             }
             RawChunk::connect(last, &mut *raw_chunk);
-            std::println!("raw chunk: {raw_chunk:?} -> {:?}", *raw_chunk);
             self.used_last = raw_chunk;
         }
     }
 
     pub unsafe fn remove_used(&mut self, addr: *const u8) {
         let last_free = &mut *self.free_last;
-        std::println!("\tlast_free: {last_free:?}");
         for raw_chunk in (*self.used_head).iter() {
-            std::println!("\traw_chunk: {:?}", *raw_chunk);
             let raw_chunk = &mut *(raw_chunk);
             if raw_chunk.addr == addr {
-                std::println!("\t\tfounded");
                 if self.used_head == raw_chunk {
-                    std::println!("setting used_head to {:?}", raw_chunk.next);
                     self.used_head = raw_chunk.next;
                 }
                 if self.used_last == raw_chunk {
@@ -225,11 +209,8 @@ impl Pool {
     }
 
     pub unsafe fn alloc(&mut self, layout: core::alloc::Layout) -> *mut u8 {
-        std::println!("\ngetting free chunk");
         let chunk = self.get_free_chunk();
-        std::println!("pushing on used_last");
         self.push_used(chunk);
-        std::println!("pushed {:?}", *chunk);
         if layout.size() > self.chunk_size {
             todo!(
                 "layout (size {} bytes and align {} bytes) cannot be allocated in a chunk ({} bytes)",
@@ -254,49 +235,31 @@ impl Pool {
 pub mod tests {
     extern crate alloc;
     extern crate std;
-    use crate::pool::RawChunk;
 
     use super::Pool;
     use core::{alloc::Layout, ptr::null_mut};
 
     #[test]
     fn simple_alloc() {
-        std::println!("creating heap");
         let heap = [0u8; 512 * 8];
-        std::println!("creating alloqator");
         let mut alloqer = Pool::new(heap.as_ptr_range());
         let layout = Layout::from_size_align(32, 2).unwrap();
-        std::println!("alloqating");
         let ptr = unsafe { alloqer.alloc(layout) };
-        std::println!("alloq state: {alloqer:?}");
-        std::println!("dealloqating");
         unsafe { alloqer.dealloc(ptr, layout) };
-        std::println!("alloq state: {alloqer:?}");
     }
 
     #[test]
     fn some_allocs() {
-        std::println!("creating heap");
         let heap = [0u8; 512 * 512];
-        std::println!("creating alloqator");
         let mut alloqer = Pool::new(heap.as_ptr_range());
         let layout = Layout::from_size_align(32, 2).unwrap();
         let mut chunks_allocated = [null_mut(); 3];
-        std::println!("alloqating");
         for chunk in chunks_allocated.iter_mut() {
             *chunk = unsafe { alloqer.alloc(layout) };
         }
 
-        std::println!("alloq's used list:");
-        for node in unsafe { (*alloqer.used_head).iter() } {
-            std::println!("{node:?} -> ");
-        }
-        std::println!("{:?}", null_mut::<RawChunk>());
-
-        std::println!("dealloqating");
         for &mut chunk in chunks_allocated.iter_mut() {
             unsafe { alloqer.dealloc(chunk, layout) }
         }
-        std::println!("alloq state: {alloqer:?}");
     }
 }
