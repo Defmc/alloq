@@ -32,7 +32,7 @@ impl AlloqMetaData {
 
     pub unsafe fn from_alloc_ptr<'a>(ptr: *const u8, layout: Layout) -> &'a mut Self {
         let end = ptr.offset(layout.size() as isize);
-        let start_meta = crate::align(end as usize, mem::align_of::<AlloqMetaData>()) as *mut u8;
+        let start_meta = crate::align_up(end as usize, mem::align_of::<AlloqMetaData>()) as *mut u8;
         &mut *(start_meta as *mut Self)
     }
 
@@ -73,9 +73,9 @@ impl Alloqator for Alloq {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let mut lock = self.iter.lock();
         let block_start = lock.1;
-        let start = crate::align(lock.1 as usize, layout.align()) as *mut u8;
+        let start = crate::align_up(lock.1 as usize, layout.align()) as *mut u8;
         let end = start.offset(layout.size() as isize);
-        let start_meta = crate::align(end as usize, mem::align_of::<AlloqMetaData>()) as *mut u8;
+        let start_meta = crate::align_up(end as usize, mem::align_of::<AlloqMetaData>()) as *mut u8;
         let end_meta = start_meta.offset(mem::size_of::<AlloqMetaData>() as isize);
         if end_meta > self.heap_end as *mut u8 {
             panic!("no available memory")
