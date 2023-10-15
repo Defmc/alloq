@@ -292,18 +292,18 @@ pub mod tests {
     //     v.push(255);
     // }
     //
-    // #[test]
-    // fn boxed() {
-    //     let heap_stackish = [0u8; 512];
-    //     let alloqer = Alloq::new(heap_stackish.as_ptr_range());
-    //     let b = Box::new_in(255u8, &alloqer);
-    //     let c = Box::new_in(127u8, &alloqer);
-    //     let b_ptr = &*b as *const u8;
-    //     let c_ptr = &*c as *const u8;
-    //     assert_ne!(b_ptr, core::ptr::null_mut());
-    //     assert_ne!(c_ptr, core::ptr::null_mut());
-    //     assert_ne!(b_ptr, c_ptr);
-    // }
+    #[test]
+    fn boxed() {
+        let heap_stackish = [0u8; 512];
+        let alloqer = Alloq::new(heap_stackish.as_ptr_range());
+        let b = Box::new_in(255u8, &alloqer);
+        let c = Box::new_in(127u8, &alloqer);
+        let b_ptr = &*b as *const u8;
+        let c_ptr = &*c as *const u8;
+        assert_ne!(b_ptr, core::ptr::null_mut());
+        assert_ne!(c_ptr, core::ptr::null_mut());
+        assert_ne!(b_ptr, c_ptr);
+    }
     //
     // #[test]
     // fn fragmented_heap() {
