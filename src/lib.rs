@@ -28,6 +28,18 @@ pub const fn align_up(addr: usize, align: usize) -> usize {
     (addr + align - 1) & !(align - 1)
 }
 
+// took from https://docs.rs/polymorph-allocator/latest/src/polymorph_allocator/align.rs.html#9-17
+// thanks, ~ren!
+pub const fn align_down(addr: usize, align: usize) -> usize {
+    if align.is_power_of_two() {
+        addr & !(align - 1)
+    } else if align == 0 {
+        addr
+    } else {
+        panic!("non power-of-two alignment");
+    }
+}
+
 pub trait Alloqator {
     type Metadata;
 
