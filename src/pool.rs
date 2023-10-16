@@ -1,101 +1,244 @@
-use core::ptr::null;
-
-use spin::Mutex;
+use core::{mem, ops::Range, ptr::null_mut};
 
 use crate::Alloqator;
-extern crate std;
+use spin::Mutex;
+
+pub const DEFAULT_CHUNK_SIZE: usize = 64;
+pub const DEFAULT_ALIGNMENT: usize = 2;
+
+#[derive(Clone, Debug)]
+pub struct RawChunk {
+    pub addr: *const u8,
+    pub chunk: *const u8,
+    pub next: *mut Self,
+    pub back: *mut Self,
+}
+
+impl RawChunk {
+    pub unsafe fn new(bind: *const u8, align: usize) -> Self {
+        Self {
+            addr: crate::align_up(bind as usize, align) as *const u8,
+            chunk: bind,
+            next: null_mut(),
+            back: null_mut(),
+        }
+    }
+
+    pub unsafe fn allocate<'a>(&self, end: *mut u8, chunk_size: usize) -> *mut Self {
+        let ptr = end.offset(-(mem::size_of::<Self>() as isize));
+        let aligned_ptr = crate::align_down(ptr as usize, mem::align_of::<Self>());
+        let aligned = aligned_ptr as *mut Self;
+        assert!(
+            self.chunk.offset(chunk_size as isize) < end,
+            "too low memory: can't allocate a chunk ({} bytes in {:?}) and metadata ({} bytes in {:?})",
+            chunk_size, self.chunk, mem::size_of::<Self>(), end
+        );
+        debug_assert!(
+            aligned.offset(1) as *const u8 <= end,
+            "using an already allocated RawChunk area"
+        );
+        *aligned = self.clone();
+        aligned
+    }
+
+    pub fn next(mut self, next: *mut Self) -> Self {
+        self.next = next;
+        self
+    }
+
+    pub fn back(mut self, back: *mut Self) -> Self {
+        self.back = back;
+        self
+    }
+
+    pub unsafe fn alloc_next<'a>(
+        &mut self,
+        list_end: &mut *const RawChunk,
+        chunk_size: usize,
+        align: usize,
+    ) -> *mut Self {
+        let last_alloc = *list_end;
+        let addr = (*last_alloc).chunk.offset(chunk_size as isize);
+        let next =
+            Self::new(addr, align /* already aligned*/).allocate(last_alloc as *mut u8, chunk_size);
+        assert!(
+            next.offset(1) <= last_alloc as *mut RawChunk,
+            "filling the previous node {:?}-{:?} in {last_alloc:?}",
+            // rust-analyzer can't rename inside strings?
+            next,
+            next.offset(1)
+        );
+        assert!(
+            *list_end > next,
+            "next is bigger {:?} > {next:?}",
+            *list_end
+        );
+        *list_end = next;
+        Self::connect_unchecked(self, &mut *next);
+        next
+    }
+
+    pub unsafe fn disconnect(&mut self) {
+        let next = self.next;
+        let back = self.back;
+        if !self.back.is_null() {
+            (*back).next = next;
+        }
+        if !self.next.is_null() {
+            (*next).back = back;
+        }
+        self.next = null_mut();
+        self.back = null_mut();
+    }
+
+    pub unsafe fn insert_in_list(&mut self, back: &mut RawChunk) {
+        self.disconnect();
+        let next = back.next;
+        Self::connect_unchecked(back, self);
+        if !next.is_null() {
+            Self::connect_unchecked(self, &mut *next);
+        }
+    }
+
+    pub unsafe fn connect(back: &mut Self, next: &mut Self) {
+        assert!(back.next.is_null());
+        assert!(next.back.is_null());
+        Self::connect_unchecked(back, next);
+    }
+
+    pub unsafe fn connect_unchecked(back: &mut Self, next: &mut Self) {
+        back.next = next as *mut Self;
+        next.back = back as *mut Self;
+    }
+
+    pub unsafe fn iter(&self) -> RawChunkIter {
+        RawChunkIter((self as *const RawChunk) as *mut RawChunk)
+    }
+
+    pub fn log_list(&self, w: &mut impl core::fmt::Write) {
+        for node in unsafe { self.iter() } {
+            write!(w, "({node:?}) .:. {:?} -> ", unsafe { &*node }).unwrap();
+        }
+        writeln!(w, "{:?}", null_mut::<Self>()).unwrap();
+    }
+}
+
+pub struct RawChunkIter(*mut RawChunk);
+
+impl Iterator for RawChunkIter {
+    type Item = *mut RawChunk;
+    fn next(&mut self) -> Option<Self::Item> {
+        let r = self.0;
+        if r.is_null() {
+            None
+        } else {
+            self.0 = unsafe { (*self.0).next };
+            Some(r)
+        }
+    }
+}
 
 #[derive(Debug)]
-pub struct Pool<const N: usize> {
-    chunks: [*const u8; N],
-    idx: usize,
-}
-
-impl<const N: usize> Pool<N> {
-    pub fn new() -> Self {
-        Self::from_chunks([null(); N])
-    }
-
-    pub fn from_chunks(chunks: [*const u8; N]) -> Self {
-        Self { chunks, idx: 0 }
-    }
-
-    pub unsafe fn pop_left(&mut self) -> *const u8 {
-        let ptr = self.chunks[self.idx];
-        self.idx += 1;
-        ptr
-    }
-
-    pub unsafe fn pop_right(&mut self) -> *const u8 {
-        let ptr = self.chunks[self.idx];
-        self.idx -= 1;
-        ptr
-    }
-
-    pub unsafe fn push_left(&mut self, ptr: *const u8) {
-        // TODO: Handle stack overflow
-        self.chunks[self.idx] = ptr;
-        self.idx += 1;
-    }
-
-    pub unsafe fn push_right(&mut self, ptr: *const u8) {
-        // TODO: Handle stack overflow
-        self.chunks[self.idx] = ptr;
-        self.idx -= 1;
-    }
-
-    pub unsafe fn remove_swap_left(&mut self, idx: usize) {
-        self.swap(idx, self.idx);
-        self.idx += 1;
-    }
-
-    pub unsafe fn remove_swap_right(&mut self, idx: usize) {
-        self.swap(idx, self.idx);
-        self.chunks[self.idx] = null();
-        if self.chunks[self.idx].is_null() {
-            self.sort();
-        }
-        self.idx -= 1;
-    }
-
-    pub unsafe fn sort(&mut self) {
-        self.chunks.sort_by(|a, b| b.cmp(a));
-    }
-
-    pub unsafe fn swap(&mut self, src: usize, dst: usize) {
-        self.chunks.swap(src, dst)
-    }
-}
-
-pub struct Alloq<const N: usize> {
-    free: Mutex<Pool<N>>,
-    used: Mutex<Pool<N>>,
+pub struct Alloq {
     heap_start: *const u8,
     heap_end: *const u8,
+    chunk_size: usize,
+    pooler: Mutex<Pool>,
 }
 
-impl<const N: usize> Alloqator for Alloq<N> {
-    type Metadata = ();
-    fn new(heap_range: core::ops::Range<*const u8>) -> Self
-    where
-        Self: Sized,
-    {
-        let offset = crate::align(heap_range.start as usize, N) as isize;
-        let mut chunks = [null(); N];
-        let mut index = offset as *const u8;
-        for chunk in chunks.iter_mut() {
-            if unsafe { index.offset(N as isize) } > heap_range.end {
-                break;
-            }
-            *chunk = index;
-            index = unsafe { index.offset(N as isize) };
+#[derive(Debug)]
+pub struct Pool {
+    used_head: *mut RawChunk,
+    free_last: *mut RawChunk,
+    used_last: *mut RawChunk,
+    list_end: *const RawChunk,
+}
+
+impl Pool {
+    pub unsafe fn push_used(&mut self, raw_chunk: *mut RawChunk) {
+        if self.used_head.is_null() {
+            self.used_head = raw_chunk;
         }
+        if self.used_last.is_null() {
+            self.used_last = raw_chunk;
+        } else {
+            let last = &mut *self.used_last;
+            if !last.next.is_null() {
+                panic!("there's a `next` in `used_last`");
+            }
+            RawChunk::connect(last, &mut *raw_chunk);
+            self.used_last = raw_chunk;
+        }
+    }
+
+    pub unsafe fn get_free_chunk(&mut self, chunk_size: usize, align: usize) -> *mut RawChunk {
+        let last = &mut *self.free_last;
+        let freed = if last.next.is_null() {
+            &mut *last.alloc_next(&mut self.list_end, chunk_size, align)
+        } else {
+            &mut *last.next
+        };
+        freed.disconnect();
+        freed
+    }
+
+    pub unsafe fn remove_used(&mut self, addr: *const u8) {
+        let last_free = &mut *self.free_last;
+        for raw_chunk_ptr in (*self.used_head).iter() {
+            let raw_chunk = &mut *(raw_chunk_ptr);
+            if (*raw_chunk).addr == addr {
+                if self.used_head == raw_chunk_ptr {
+                    self.used_head = raw_chunk.next;
+                }
+                if self.used_last == raw_chunk_ptr {
+                    self.used_last = raw_chunk.back;
+                }
+                raw_chunk.insert_in_list(last_free);
+                return;
+            }
+        }
+        panic!("{addr:?} was not allocated to be freed");
+    }
+}
+
+impl Alloq {
+    pub unsafe fn with_chunk_size(
+        heap_range: Range<*const u8>,
+        chunk_size: usize,
+        align: usize,
+    ) -> Self {
+        let free_last =
+            RawChunk::new(heap_range.start, align).allocate(heap_range.end as *mut u8, chunk_size);
         Self {
-            free: Mutex::new(Pool::from_chunks(chunks)),
-            used: Mutex::new(Pool::new()),
             heap_start: heap_range.start,
             heap_end: heap_range.end,
+            chunk_size,
+            pooler: Pool {
+                used_head: null_mut(),
+                free_last,
+                used_last: null_mut(),
+                list_end: free_last,
+            }
+            .into(),
         }
+    }
+    pub const fn get_max_size<T>(count: usize) -> usize {
+        let align_of = if mem::align_of::<T>() > 0 {
+            mem::align_of::<T>()
+        } else {
+            1
+        };
+        (mem::size_of::<T>() + mem::size_of::<RawChunk>() + align_of - 1) * count
+    }
+}
+
+// Why rustfmt is removing comments?
+// impl /*Alloqator for*/ Pool {
+impl Alloqator for Alloq {
+    type Metadata = RawChunk;
+
+    fn new(heap_range: Range<*const u8>) -> Self {
+        unsafe { Self::with_chunk_size(heap_range, DEFAULT_CHUNK_SIZE, DEFAULT_ALIGNMENT) }
     }
 
     fn heap_start(&self) -> *const u8 {
@@ -107,91 +250,161 @@ impl<const N: usize> Alloqator for Alloq<N> {
     }
 
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        let mut free_lock = self.free.lock();
-        let mut used_lock = self.used.lock();
-        if layout.size() > N {
-            todo!("alloc multiple chunks");
-        }
-        let chunk = free_lock.pop_left();
-        used_lock.push_left(chunk);
-        crate::align(chunk as usize, layout.align()) as *mut u8
+        let chunk = {
+            let mut pooler = self.pooler.lock();
+            let chunk = pooler.get_free_chunk(self.chunk_size, layout.align());
+            pooler.push_used(chunk);
+            if layout.size() > self.chunk_size {
+                todo!(
+                "layout (size {} bytes and align {} bytes) cannot be allocated in a chunk ({} bytes)",
+                layout.size(),
+                layout.align(),
+                self.chunk_size
+            );
+            }
+            chunk
+        };
+        (*chunk).addr as *mut u8
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: core::alloc::Layout) {
-        let mut free_lock = self.free.lock();
-        let mut used_lock = self.used.lock();
-
-        let idx = used_lock
-            .chunks
-            .iter()
-            .position(|&p| p == ptr as *const u8)
-            .expect("use after free");
-        let freed = used_lock.chunks[idx];
-        used_lock.remove_swap_right(idx);
-        free_lock.push_right(freed);
+        self.pooler.lock().remove_used(ptr);
     }
+
+    // TODO: Improve shrink and grow by simply link another pointer
 }
 
-unsafe impl<const N: usize> core::alloc::Allocator for Alloq<N> {
-    fn allocate(
-        &self,
-        layout: core::alloc::Layout,
-    ) -> Result<core::ptr::NonNull<[u8]>, core::alloc::AllocError> {
-        Alloqator::allocate(self, layout)
-    }
-
-    unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: core::alloc::Layout) {
-        Alloqator::deallocate(self, ptr, layout)
-    }
-}
-
-unsafe impl<const N: usize> core::alloc::GlobalAlloc for Alloq<N> {
-    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        Alloqator::alloc(self, layout)
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
-        Alloqator::dealloc(self, ptr, layout)
-    }
-}
+crate::impl_allocator!(Alloq);
 
 #[cfg(test)]
 pub mod tests {
+    extern crate alloc;
+
+    use alloc::{boxed::Box, vec::Vec};
+
     use super::Alloq;
     use crate::Alloqator;
-    extern crate alloc;
-    extern crate std;
-    use alloc::boxed::Box;
+    use core::{alloc::Layout, ptr::null_mut};
 
     #[test]
-    fn simple() {
+    fn simple_alloc() {
+        let heap = [0u8; 512 * 8];
+        let alloqer = Alloq::new(heap.as_ptr_range());
+        let layout = Layout::from_size_align(32, 2).unwrap();
+        let ptr = unsafe { alloqer.alloc(layout) };
+        unsafe { alloqer.dealloc(ptr, layout) };
+    }
+
+    #[test]
+    fn linear_allocs() {
+        let heap = [0u8; 512 * 512];
+        let alloqer = Alloq::new(heap.as_ptr_range());
+        let layout = Layout::from_size_align(32, 2).unwrap();
+        let mut chunks_allocated = [null_mut(); 4];
+        for chunk in chunks_allocated.iter_mut() {
+            *chunk = unsafe { alloqer.alloc(layout) };
+        }
+
+        for &mut chunk in chunks_allocated.iter_mut() {
+            unsafe { alloqer.dealloc(chunk, layout) }
+        }
+    }
+
+    #[test]
+    fn vec_grow() {
         let heap_stackish = [0u8; 512];
-        let alloqer: Alloq<32> = Alloq::new(heap_stackish.as_ptr_range());
-        std::println!("mapped");
-        std::println!("free pool: {:#?}", alloqer.free.lock());
-        std::println!("used pool: {:#?}\n", alloqer.used.lock());
-        let b = Box::new_in(31, &alloqer);
-        std::println!("b allocated");
-        std::println!("free pool: {:#?}", alloqer.free.lock());
-        std::println!("used pool: {:#?}\n", alloqer.used.lock());
-        let c = Box::new_in(32, &alloqer);
-        std::println!("c allocated");
-        std::println!("free pool: {:#?}", alloqer.free.lock());
-        std::println!("used pool: {:#?}\n", alloqer.used.lock());
-        drop(b);
-        std::println!("b freed");
-        std::println!("free pool: {:#?}", alloqer.free.lock());
-        std::println!("used pool: {:#?}\n", alloqer.used.lock());
-        std::assert_ne!(*c, 32 + 1);
-        let d = Box::new_in(30, &alloqer);
-        std::println!("d allocated");
-        std::println!("free pool: {:#?}", alloqer.free.lock());
-        std::println!("used pool: {:#?}\n", alloqer.used.lock());
-        std::assert_ne!(*c, *d + 1);
-        drop(d);
-        drop(c);
-        std::println!("everyone dropped");
-        std::println!("free pool: {:#?}", alloqer.free.lock());
-        std::println!("used pool: {:#?}\n", alloqer.used.lock());
+        let alloqer = Alloq::new(heap_stackish.as_ptr_range());
+        let mut v = Vec::new_in(&alloqer);
+        for x in 0..10 {
+            v.push(x);
+        }
+        v.push(255);
+    }
+
+    #[test]
+    fn boxed() {
+        let heap_stackish = [0u8; 512];
+        let alloqer = Alloq::new(heap_stackish.as_ptr_range());
+        let b = Box::new_in(255u8, &alloqer);
+        let c = Box::new_in(127u8, &alloqer);
+        let b_ptr = &*b as *const u8;
+        let c_ptr = &*c as *const u8;
+        assert_ne!(b_ptr, core::ptr::null_mut());
+        assert_ne!(c_ptr, core::ptr::null_mut());
+        assert_ne!(b_ptr, c_ptr);
+    }
+
+    #[test]
+    fn fragmented_heap() {
+        let heap_stackish = [0u8; 1024 * 1024];
+        let alloqer = Alloq::new(heap_stackish.as_ptr_range());
+        let mut v: Vec<u8, _> = Vec::new_in(&alloqer);
+        let mut w: Vec<u8, _> = Vec::new_in(&alloqer);
+        for x in 0..128 {
+            match x % 2 {
+                0 => v.push(x),
+                1 => w.push(x),
+                _ => unreachable!(),
+            }
+        }
+        assert!(v.iter().all(|i| i % 2 == 0));
+        assert!(w.iter().all(|i| i % 2 == 1));
+    }
+
+    #[test]
+    fn custom_structs() {
+        struct S {
+            _foo: i32,
+            _bar: [u16; 8],
+            _baz: &'static str,
+        }
+        let heap_stackish = [0u8; Alloq::get_max_size::<S>(10) * 2];
+        let alloqer = unsafe { Alloq::with_chunk_size(heap_stackish.as_ptr_range(), 512, 2) };
+        let mut v = Vec::with_capacity_in(10, &alloqer);
+        for x in 0..10 {
+            let y = x as u16;
+            let s = S {
+                _foo: (x - 5) * 255,
+                _bar: [
+                    y * 8,
+                    y * 8 + 1,
+                    y * 8 + 2,
+                    y * 8 + 3,
+                    y * 8 + 4,
+                    y * 8 + 5,
+                    y * 8 + 6,
+                    y * 8 + 7,
+                ],
+                _baz: "uga",
+            };
+            v.push(s)
+        }
+    }
+
+    #[test]
+    fn full_heap() {
+        const VECTOR_SIZE: usize = 16;
+        let heap_stackish = [0u8; Alloq::get_max_size::<[u16; 32]>(VECTOR_SIZE) * 2];
+        let alloqer = unsafe { Alloq::with_chunk_size(heap_stackish.as_ptr_range(), 1024, 2) };
+        let mut v = Vec::with_capacity_in(VECTOR_SIZE, &alloqer);
+        for x in 0..VECTOR_SIZE {
+            let ar: [u16; 32] = core::array::from_fn(|i| (i * x) as u16);
+            v.push(ar);
+        }
+    }
+
+    #[test]
+    fn zero_sized() {
+        const VECTOR_SIZE: usize = 1024;
+        // FIXME: 32768 bytes for ZST? Really?
+        let heap_stackish = [0u8; Alloq::get_max_size::<()>(VECTOR_SIZE)];
+        let alloqer = Alloq::new(heap_stackish.as_ptr_range());
+        let mut v = Vec::with_capacity_in(VECTOR_SIZE, &alloqer);
+        for _ in 0..VECTOR_SIZE {
+            v.push(());
+        }
+        let b = Box::new_in((), &alloqer);
+        assert_eq!(*b, ());
+        assert_eq!(v.len(), VECTOR_SIZE);
     }
 }

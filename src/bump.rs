@@ -33,7 +33,7 @@ impl Alloqator for Alloq {
     #[inline(always)]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let mut lock = self.iter.lock();
-        let start = crate::align(lock.1 as usize, layout.align()) as *mut u8;
+        let start = crate::align_up(lock.1 as usize, layout.align()) as *mut u8;
         let end = start.offset(layout.size() as isize);
         if end > self.heap_end as *mut u8 {
             panic!("no available memory")
