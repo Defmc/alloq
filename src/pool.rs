@@ -24,10 +24,19 @@ impl RawChunk {
         }
     }
 
-    pub unsafe fn allocate<'a>(&self, end: *mut u8) -> *mut Self {
+    pub unsafe fn allocate<'a>(&self, end: *mut u8, chunk_size: usize) -> *mut Self {
         let ptr = end.offset(-(mem::size_of::<Self>() as isize));
-        let aligned_ptr = crate::align_down(ptr as usize, mem::align_of::<Self>()) as *mut Self;
+        let aligned_ptr = crate::align_down(ptr as usize, mem::align_of::<Self>());
         let aligned = aligned_ptr as *mut Self;
+        assert!(
+            self.chunk.offset(chunk_size as isize) < end,
+            "too low memory: can't allocate a chunk ({} bytes in {:?}) and metadata ({} bytes in {:?})",
+            chunk_size, self.chunk, mem::size_of::<Self>(), end
+        );
+        debug_assert!(
+            aligned.offset(1) as *const u8 <= end,
+            "using an already allocated RawChunk area"
+        );
         *aligned = self.clone();
         aligned
     }
@@ -46,18 +55,23 @@ impl RawChunk {
         &mut self,
         list_end: &mut *const RawChunk,
         chunk_size: usize,
+        align: usize,
     ) -> *mut Self {
-        let last_alloc = *list_end as *mut Self;
-        let addr = (*last_alloc).addr.offset(chunk_size as isize);
-        let next = Self::new(addr, 1 /* already aligned*/)
-            .back(last_alloc)
-            .allocate(last_alloc.offset(-1) as *mut u8);
+        let last_alloc = *list_end;
+        let addr = (*last_alloc).chunk.offset(chunk_size as isize);
+        let next =
+            Self::new(addr, align /* already aligned*/).allocate(last_alloc as *mut u8, chunk_size);
         assert!(
-            next.offset(1) <= last_alloc,
+            next.offset(1) <= last_alloc as *mut RawChunk,
             "filling the previous node {:?}-{:?} in {last_alloc:?}",
             // rust-analyzer can't rename inside strings?
             next,
-            next.offset(mem::size_of::<Self>() as isize)
+            next.offset(1)
+        );
+        assert!(
+            *list_end > next,
+            "next is bigger {:?} > {next:?}",
+            *list_end
         );
         *list_end = next;
         Self::connect_unchecked(self, &mut *next);
@@ -99,6 +113,13 @@ impl RawChunk {
 
     pub unsafe fn iter(&self) -> RawChunkIter {
         RawChunkIter((self as *const RawChunk) as *mut RawChunk)
+    }
+
+    pub fn log_list(&self, w: &mut impl core::fmt::Write) {
+        for node in unsafe { self.iter() } {
+            write!(w, "({node:?}) .:. {:?} -> ", unsafe { &*node }).unwrap();
+        }
+        writeln!(w, "{:?}", null_mut::<Self>()).unwrap();
     }
 }
 
@@ -150,10 +171,10 @@ impl Pool {
         }
     }
 
-    pub unsafe fn get_free_chunk(&mut self, chunk_size: usize) -> *mut RawChunk {
+    pub unsafe fn get_free_chunk(&mut self, chunk_size: usize, align: usize) -> *mut RawChunk {
         let last = &mut *self.free_last;
         let freed = if last.next.is_null() {
-            &mut *last.alloc_next(&mut self.list_end, chunk_size)
+            &mut *last.alloc_next(&mut self.list_end, chunk_size, align)
         } else {
             &mut *last.next
         };
@@ -163,20 +184,20 @@ impl Pool {
 
     pub unsafe fn remove_used(&mut self, addr: *const u8) {
         let last_free = &mut *self.free_last;
-        for raw_chunk in (*self.used_head).iter() {
-            let raw_chunk = &mut *(raw_chunk);
-            if raw_chunk.addr == addr {
-                if self.used_head == raw_chunk {
+        for raw_chunk_ptr in (*self.used_head).iter() {
+            let raw_chunk = &mut *(raw_chunk_ptr);
+            if (*raw_chunk).addr == addr {
+                if self.used_head == raw_chunk_ptr {
                     self.used_head = raw_chunk.next;
                 }
-                if self.used_last == raw_chunk {
+                if self.used_last == raw_chunk_ptr {
                     self.used_last = raw_chunk.back;
                 }
                 raw_chunk.insert_in_list(last_free);
+                return;
             }
-            return;
         }
-        panic!("invalid chunk");
+        panic!("{addr:?} was not allocated to be freed");
     }
 }
 
@@ -186,7 +207,8 @@ impl Alloq {
         chunk_size: usize,
         align: usize,
     ) -> Self {
-        let free_last = RawChunk::new(heap_range.start, align).allocate(heap_range.end as *mut u8);
+        let free_last =
+            RawChunk::new(heap_range.start, align).allocate(heap_range.end as *mut u8, chunk_size);
         Self {
             heap_start: heap_range.start,
             heap_end: heap_range.end,
@@ -200,12 +222,20 @@ impl Alloq {
             .into(),
         }
     }
+    pub const fn get_max_size<T>(count: usize) -> usize {
+        let align_of = if mem::align_of::<T>() > 0 {
+            mem::align_of::<T>()
+        } else {
+            1
+        };
+        (mem::size_of::<T>() + mem::size_of::<RawChunk>() + align_of - 1) * count
+    }
 }
 
 // Why rustfmt is removing comments?
 // impl /*Alloqator for*/ Pool {
 impl Alloqator for Alloq {
-    type Metadata = ();
+    type Metadata = RawChunk;
 
     fn new(heap_range: Range<*const u8>) -> Self {
         unsafe { Self::with_chunk_size(heap_range, DEFAULT_CHUNK_SIZE, DEFAULT_ALIGNMENT) }
@@ -220,25 +250,25 @@ impl Alloqator for Alloq {
     }
 
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        let mut pooler = self.pooler.lock();
-        let chunk = pooler.get_free_chunk(self.chunk_size);
-        pooler.push_used(chunk);
-        if layout.size() > self.chunk_size {
-            todo!(
+        let chunk = {
+            let mut pooler = self.pooler.lock();
+            let chunk = pooler.get_free_chunk(self.chunk_size, layout.align());
+            pooler.push_used(chunk);
+            if layout.size() > self.chunk_size {
+                todo!(
                 "layout (size {} bytes and align {} bytes) cannot be allocated in a chunk ({} bytes)",
                 layout.size(),
                 layout.align(),
                 self.chunk_size
             );
-        }
-        let addr = crate::align_up(chunk as usize, layout.align()) as *mut u8;
-        (*chunk).addr = addr;
-        addr
+            }
+            chunk
+        };
+        (*chunk).addr as *mut u8
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: core::alloc::Layout) {
-        let mut pooler = self.pooler.lock();
-        pooler.remove_used(ptr);
+        self.pooler.lock().remove_used(ptr);
     }
 
     // TODO: Improve shrink and grow by simply link another pointer
@@ -249,7 +279,6 @@ crate::impl_allocator!(Alloq);
 #[cfg(test)]
 pub mod tests {
     extern crate alloc;
-    extern crate std;
 
     use alloc::{boxed::Box, vec::Vec};
 
@@ -271,7 +300,7 @@ pub mod tests {
         let heap = [0u8; 512 * 512];
         let alloqer = Alloq::new(heap.as_ptr_range());
         let layout = Layout::from_size_align(32, 2).unwrap();
-        let mut chunks_allocated = [null_mut(); 512];
+        let mut chunks_allocated = [null_mut(); 4];
         for chunk in chunks_allocated.iter_mut() {
             *chunk = unsafe { alloqer.alloc(layout) };
         }
@@ -280,18 +309,18 @@ pub mod tests {
             unsafe { alloqer.dealloc(chunk, layout) }
         }
     }
-    //
-    // #[test]
-    // fn vec_grow() {
-    //     let heap_stackish = [0u8; 512];
-    //     let alloqer = Alloq::new(heap_stackish.as_ptr_range());
-    //     let mut v = Vec::with_capacity_in(10, &alloqer);
-    //     for x in 0..10 {
-    //         v.push(x);
-    //     }
-    //     v.push(255);
-    // }
-    //
+
+    #[test]
+    fn vec_grow() {
+        let heap_stackish = [0u8; 512];
+        let alloqer = Alloq::new(heap_stackish.as_ptr_range());
+        let mut v = Vec::new_in(&alloqer);
+        for x in 0..10 {
+            v.push(x);
+        }
+        v.push(255);
+    }
+
     #[test]
     fn boxed() {
         let heap_stackish = [0u8; 512];
@@ -304,74 +333,71 @@ pub mod tests {
         assert_ne!(c_ptr, core::ptr::null_mut());
         assert_ne!(b_ptr, c_ptr);
     }
-    //
-    // #[test]
-    // fn fragmented_heap() {
-    //     let heap_stackish = [0u8; 1024 * 1024];
-    //     let alloqer = Alloq::new(heap_stackish.as_ptr_range());
-    //     let mut v: Vec<u8, _> = Vec::new_in(&alloqer);
-    //     let mut w: Vec<u8, _> = Vec::new_in(&alloqer);
-    //     for x in 0..128 {
-    //         match x % 2 {
-    //             0 => v.push(x),
-    //             1 => w.push(x),
-    //             _ => unreachable!(),
-    //         }
-    //     }
-    //     assert!(v.iter().all(|i| i % 2 == 0));
-    //     assert!(w.iter().all(|i| i % 2 == 1));
-    // }
-    //
-    // #[test]
-    // fn custom_structs() {
-    //     struct S {
-    //         _foo: i32,
-    //         _bar: [u16; 8],
-    //         _baz: &'static str,
-    //     }
-    //     let heap_stackish = [0u8; 512];
-    //     let alloqer = Alloq::new(heap_stackish.as_ptr_range());
-    //     let mut v = Vec::with_capacity_in(10, &alloqer);
-    //     for x in 0..10 {
-    //         let y = x as u16;
-    //         let s = S {
-    //             _foo: (x - 5) * 255,
-    //             _bar: [
-    //                 y * 8,
-    //                 y * 8 + 1,
-    //                 y * 8 + 2,
-    //                 y * 8 + 3,
-    //                 y * 8 + 4,
-    //                 y * 8 + 5,
-    //                 y * 8 + 6,
-    //                 y * 8 + 7,
-    //             ],
-    //             _baz: "uga",
-    //         };
-    //         v.push(s)
-    //     }
-    // }
-    //
-    // #[test]
-    // fn full_heap() {
-    //     use core::mem::size_of;
-    //     const VECTOR_SIZE: usize = 16;
-    //     let heap_stackish = [0u8; (size_of::<<Alloq as Alloqator>::Metadata>()
-    //         + size_of::<[u16; 32]>())
-    //         * VECTOR_SIZE];
-    //     let alloqer = Alloq::new(heap_stackish.as_ptr_range());
-    //     let mut v = Vec::with_capacity_in(VECTOR_SIZE, &alloqer);
-    //     for x in 0..VECTOR_SIZE {
-    //         let ar: [u16; 32] = core::array::from_fn(|i| (i * x) as u16);
-    //         v.push(ar);
-    //     }
-    // }
-    //
+
+    #[test]
+    fn fragmented_heap() {
+        let heap_stackish = [0u8; 1024 * 1024];
+        let alloqer = Alloq::new(heap_stackish.as_ptr_range());
+        let mut v: Vec<u8, _> = Vec::new_in(&alloqer);
+        let mut w: Vec<u8, _> = Vec::new_in(&alloqer);
+        for x in 0..128 {
+            match x % 2 {
+                0 => v.push(x),
+                1 => w.push(x),
+                _ => unreachable!(),
+            }
+        }
+        assert!(v.iter().all(|i| i % 2 == 0));
+        assert!(w.iter().all(|i| i % 2 == 1));
+    }
+
+    #[test]
+    fn custom_structs() {
+        struct S {
+            _foo: i32,
+            _bar: [u16; 8],
+            _baz: &'static str,
+        }
+        let heap_stackish = [0u8; Alloq::get_max_size::<S>(10) * 2];
+        let alloqer = unsafe { Alloq::with_chunk_size(heap_stackish.as_ptr_range(), 512, 2) };
+        let mut v = Vec::with_capacity_in(10, &alloqer);
+        for x in 0..10 {
+            let y = x as u16;
+            let s = S {
+                _foo: (x - 5) * 255,
+                _bar: [
+                    y * 8,
+                    y * 8 + 1,
+                    y * 8 + 2,
+                    y * 8 + 3,
+                    y * 8 + 4,
+                    y * 8 + 5,
+                    y * 8 + 6,
+                    y * 8 + 7,
+                ],
+                _baz: "uga",
+            };
+            v.push(s)
+        }
+    }
+
+    #[test]
+    fn full_heap() {
+        const VECTOR_SIZE: usize = 16;
+        let heap_stackish = [0u8; Alloq::get_max_size::<[u16; 32]>(VECTOR_SIZE) * 2];
+        let alloqer = unsafe { Alloq::with_chunk_size(heap_stackish.as_ptr_range(), 1024, 2) };
+        let mut v = Vec::with_capacity_in(VECTOR_SIZE, &alloqer);
+        for x in 0..VECTOR_SIZE {
+            let ar: [u16; 32] = core::array::from_fn(|i| (i * x) as u16);
+            v.push(ar);
+        }
+    }
+
     #[test]
     fn zero_sized() {
-        use core::mem::size_of;
         const VECTOR_SIZE: usize = 1024;
-        let heap_stackish = [0u8; size_of::<()>() * VECTOR_SIZE];
+        // FIXME: 32768 bytes for ZST? Really?
+        let heap_stackish = [0u8; Alloq::get_max_size::<()>(VECTOR_SIZE)];
         let alloqer = Alloq::new(heap_stackish.as_ptr_range());
         let mut v = Vec::with_capacity_in(VECTOR_SIZE, &alloqer);
         for _ in 0..VECTOR_SIZE {
