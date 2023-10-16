@@ -64,6 +64,9 @@ pub trait Alloqator {
 
     fn heap_start(&self) -> *const u8;
     fn heap_end(&self) -> *const u8;
+    fn heap_range(&self) -> Range<*const u8> {
+        self.heap_start()..self.heap_end()
+    }
 
     unsafe fn alloc(&self, layout: Layout) -> *mut u8;
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout);
@@ -72,8 +75,11 @@ pub trait Alloqator {
         &self,
         layout: Layout,
     ) -> Result<core::ptr::NonNull<[u8]>, core::alloc::AllocError> {
+        extern crate std;
         let p = unsafe { self.alloc(layout) };
+        std::println!("allocated");
         let slice = unsafe { core::slice::from_raw_parts_mut(p, layout.size()) };
+        std::println!("sliced");
         Ok(NonNull::new(slice).expect("oh null pointer"))
     }
 
