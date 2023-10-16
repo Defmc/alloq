@@ -3,7 +3,7 @@ use core::{mem, ops::Range, ptr::null_mut};
 use crate::Alloqator;
 use spin::Mutex;
 
-pub const DEFAULT_CHUNK_SIZE: usize = 512;
+pub const DEFAULT_CHUNK_SIZE: usize = 64;
 pub const DEFAULT_ALIGNMENT: usize = 2;
 
 #[derive(Clone, Debug)]
@@ -208,7 +208,7 @@ impl Alloqator for Alloq {
     type Metadata = ();
 
     fn new(heap_range: Range<*const u8>) -> Self {
-        unsafe { Self::with_chunk_size(heap_range, 512, 2) }
+        unsafe { Self::with_chunk_size(heap_range, DEFAULT_CHUNK_SIZE, DEFAULT_ALIGNMENT) }
     }
 
     fn heap_start(&self) -> *const u8 {
