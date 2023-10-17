@@ -41,7 +41,8 @@ impl AlloqMetaData {
         ptr.offset(mem::size_of::<AlloqMetaData>() as isize)
     }
 }
-
+/// A Deallocation-able Bump allocator. Works like `crate::bump::Alloq`, but has severalmechanisms
+/// to deallocate in a stack-ish allocator
 pub struct Alloq {
     pub heap_start: *const u8,
     pub iter: Mutex<(usize, *mut u8, *const u8)>,
@@ -69,6 +70,9 @@ impl Alloqator for Alloq {
         self.heap_end
     }
 
+    /// Similar to `crate::bump::Bump::alloc` (O(1) so), but also allocates a `AlloqMetaData` in the top of
+    /// stack, containing where is the block, where is the last `AlloqMetaData` allocated and if
+    /// it's being used
     #[inline(always)]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let mut lock = self.iter.lock();
@@ -87,6 +91,9 @@ impl Alloqator for Alloq {
         md
     }
 
+/// Set the `ptr` metadata as unused. If it's on the top of stack, starts to deallocate (return the
+/// stack pointer to `last_meta`) all the
+/// last areas marked as unused
     #[inline(always)]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         let mut lock = *self.iter.lock();
