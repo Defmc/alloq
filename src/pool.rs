@@ -143,7 +143,8 @@ impl Iterator for RawChunkIter {
         }
     }
 }
-
+/// An fixed-size allocator with a pool memory managment. Using a native reverse link-list, its map
+/// the block and use two lists to cache them.
 #[derive(Debug)]
 pub struct Alloq {
     heap_start: *const u8,
@@ -248,6 +249,8 @@ impl Alloqator for Alloq {
         self.heap_end
     }
 
+    /// Pass pre-allocated block and add its to the used list. If there's no available blocks, map
+    /// one.
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
         let chunk = {
             let mut pooler = self.pooler.lock();
@@ -269,6 +272,7 @@ impl Alloqator for Alloq {
         (*chunk).addr as *mut u8
     }
 
+    /// Moves the block to the free list
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: core::alloc::Layout) {
         self.pooler.lock().remove_used(ptr);
     }
