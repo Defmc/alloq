@@ -12,3 +12,9 @@ Nice, but you can have multiple allocators in your project. So toggle the import
 use alloq::bump::Alloq;
 ```
 And everything should work.
+
+## Benchmark
+Run `cargo bench` to generate the benchmark results. The command should have created a folder like `alloq-bench-1091070246479467809` (these numbers doesn't matter, it's just for avoid folder conflicts between benchmarks). Open it and copy `bench.gp` gnuplot script template, run it and open with a image viewer like `feh`:
+```sh
+cd alloq-bench-* && cp ../bench.gp bench.gp && gnuplot bench.gp && feh gp_out.png
+```
