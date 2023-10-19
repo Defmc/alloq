@@ -1,4 +1,9 @@
-use core::{alloc::Layout, mem, ops::Range, ptr::null_mut};
+use core::{
+    alloc::{AllocError, Allocator, Layout},
+    mem,
+    ops::Range,
+    ptr::{null_mut, NonNull},
+};
 use spin::Mutex;
 
 use crate::Alloqator;
@@ -41,12 +46,60 @@ impl AlloqMetaData {
         ptr.offset(mem::size_of::<AlloqMetaData>() as isize)
     }
 }
-/// A Deallocation-able Bump allocator. Works like `crate::bump::Alloq`, but has severalmechanisms
+/// A Deallocation-able Bump allocator. Works like `crate::bump::Alloq`, but has several mechanisms
 /// to deallocate in a stack-ish allocator
 pub struct Alloq {
     pub heap_start: *const u8,
     pub iter: Mutex<(usize, *mut u8, *const u8)>,
     pub heap_end: *const u8,
+}
+
+unsafe impl Allocator for Alloq {
+    /// Similar to `crate::bump::Bump::alloc` (O(1) so), but also allocates a `AlloqMetaData` in the top of
+    /// stack, containing where is the block, where is the last `AlloqMetaData` allocated and if
+    /// it's being used
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let mut lock = self.iter.lock();
+        let block_start = lock.1;
+        let start = crate::align_up(lock.1 as usize, layout.align()) as *mut u8;
+        let end = unsafe { start.offset(layout.size() as isize) };
+        let start_meta = crate::align_up(end as usize, mem::align_of::<AlloqMetaData>()) as *mut u8;
+        let end_meta = unsafe { start_meta.offset(mem::size_of::<AlloqMetaData>() as isize) };
+        if end_meta > self.heap_end as *mut u8 {
+            panic!("no available memory")
+        }
+        lock.1 = end_meta;
+        lock.0 += 1;
+        let (md, last_meta) =
+            unsafe { AlloqMetaData::new(block_start, lock.2).write_meta(start, end_meta) };
+        lock.2 = last_meta;
+        let slice = unsafe { core::slice::from_raw_parts_mut(md, layout.size()) };
+        NonNull::new(slice).ok_or(AllocError)
+    }
+
+    /// Set the `ptr` metadata as unused. If it's on the top of stack, starts to deallocate (return the
+    /// stack pointer to `last_meta`) all the
+    /// last areas marked as unused
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        let mut lock = *self.iter.lock();
+        lock.0 -= 1;
+        if lock.0 == 0 {
+            lock.1 = self.heap_start as *mut u8;
+            return;
+        }
+        let mut meta = AlloqMetaData::from_alloc_ptr(ptr.as_ptr(), layout);
+        meta.used = false;
+        if meta.after() == lock.1 {
+            while !meta.used {
+                lock.1 = meta.start as *mut u8;
+                if meta.last_meta.is_null() {
+                    return;
+                }
+                meta = &mut *(meta.last_meta as *mut AlloqMetaData);
+                lock.2 = meta.last_meta;
+            }
+        }
+    }
 }
 
 impl Alloqator for Alloq {
@@ -68,52 +121,6 @@ impl Alloqator for Alloq {
     #[inline(always)]
     fn heap_end(&self) -> *const u8 {
         self.heap_end
-    }
-
-    /// Similar to `crate::bump::Bump::alloc` (O(1) so), but also allocates a `AlloqMetaData` in the top of
-    /// stack, containing where is the block, where is the last `AlloqMetaData` allocated and if
-    /// it's being used
-    #[inline(always)]
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let mut lock = self.iter.lock();
-        let block_start = lock.1;
-        let start = crate::align_up(lock.1 as usize, layout.align()) as *mut u8;
-        let end = start.offset(layout.size() as isize);
-        let start_meta = crate::align_up(end as usize, mem::align_of::<AlloqMetaData>()) as *mut u8;
-        let end_meta = start_meta.offset(mem::size_of::<AlloqMetaData>() as isize);
-        if end_meta > self.heap_end as *mut u8 {
-            panic!("no available memory")
-        }
-        lock.1 = end_meta;
-        lock.0 += 1;
-        let (md, last_meta) = AlloqMetaData::new(block_start, lock.2).write_meta(start, end_meta);
-        lock.2 = last_meta;
-        md
-    }
-
-    /// Set the `ptr` metadata as unused. If it's on the top of stack, starts to deallocate (return the
-    /// stack pointer to `last_meta`) all the
-    /// last areas marked as unused
-    #[inline(always)]
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let mut lock = *self.iter.lock();
-        lock.0 -= 1;
-        if lock.0 == 0 {
-            lock.1 = self.heap_start as *mut u8;
-            return;
-        }
-        let mut meta = AlloqMetaData::from_alloc_ptr(ptr, layout);
-        meta.used = false;
-        if meta.after() == lock.1 {
-            while !meta.used {
-                lock.1 = meta.start as *mut u8;
-                if meta.last_meta.is_null() {
-                    return;
-                }
-                meta = &mut *(meta.last_meta as *mut AlloqMetaData);
-                lock.2 = meta.last_meta;
-            }
-        }
     }
 
     #[inline(always)]

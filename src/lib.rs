@@ -1,7 +1,12 @@
 #![feature(allocator_api)]
 #![no_std]
 
-use core::{alloc::Layout, mem, ops::Range, ptr::NonNull};
+use core::{
+    alloc::{Allocator, Layout},
+    mem,
+    ops::Range,
+    ptr::NonNull,
+};
 
 pub mod list;
 
@@ -38,7 +43,7 @@ pub const fn align_down(addr: usize, align: usize) -> usize {
     }
 }
 
-pub trait Alloqator {
+pub trait Alloqator: Allocator {
     type Metadata;
 
     fn new(heap_range: Range<*const u8>) -> Self
@@ -61,21 +66,12 @@ pub trait Alloqator {
         self.heap_start()..self.heap_end()
     }
 
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8;
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout);
-
-    fn allocate(
-        &self,
-        layout: Layout,
-    ) -> Result<core::ptr::NonNull<[u8]>, core::alloc::AllocError> {
-        extern crate std;
-        let p = unsafe { self.alloc(layout) };
-        let slice = unsafe { core::slice::from_raw_parts_mut(p, layout.size()) };
-        NonNull::new(slice).ok_or(core::alloc::AllocError)
+    fn alloc(&self, layout: Layout) -> *mut u8 {
+        unsafe { (*self.allocate(layout).unwrap().as_ptr()).as_ptr() as *mut u8 }
     }
 
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: core::alloc::Layout) {
-        self.dealloc(ptr.as_ptr(), layout);
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        self.deallocate(NonNull::new(ptr).unwrap(), layout);
     }
 }
 

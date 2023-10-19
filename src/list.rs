@@ -1,5 +1,7 @@
 use crate::Alloqator;
+use core::alloc::{AllocError, Allocator};
 use core::ops::Range;
+use core::ptr::NonNull;
 use core::{mem, slice};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -30,6 +32,53 @@ pub struct Alloq {
     heap_end: *const u8,
 }
 
+unsafe impl Allocator for Alloq {
+    fn allocate(&self, layout: core::alloc::Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let mut start = self.heap_start as *mut u8;
+        let mut end = self.heap_start as *mut u8;
+        let obj_size = (layout.size() + core::mem::size_of::<AlloqMetaData>()) as isize;
+        let is_aligned = |p: *mut u8| {
+            (p as usize) % (layout.align() + mem::size_of::<AlloqMetaData>()) == 0
+                && (p as usize) % mem::align_of::<AlloqMetaData>() == 0
+        };
+        unsafe {
+            loop {
+                if *end != 0 {
+                    let metadata = end as *const AlloqMetaData;
+                    end = end.offset((*metadata).total_size() as isize);
+                    start = end;
+                }
+                end = end.offset(1);
+                if !is_aligned(start) && is_aligned(end) {
+                    start = end;
+                }
+                if end.offset_from(start) >= obj_size && is_aligned(start) {
+                    let ptr = AlloqMetaData::new(layout.size()).write_meta(start as *mut u8);
+                    let slice = core::slice::from_raw_parts_mut(ptr, layout.size());
+                    return NonNull::new(slice).ok_or(AllocError);
+                }
+                if end as *const u8 >= self.heap_end {
+                    panic!("no available memory");
+                }
+            }
+        }
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: core::alloc::Layout) {
+        let offset = unsafe {
+            ptr.as_ptr()
+                .offset(-(core::mem::size_of::<AlloqMetaData>() as isize))
+        };
+        unsafe {
+            slice::from_raw_parts_mut(
+                offset,
+                layout.size() + core::mem::size_of::<AlloqMetaData>(),
+            )
+        }
+        .fill(0)
+    }
+}
+
 impl Alloqator for Alloq {
     type Metadata = AlloqMetaData;
     fn new(heap_range: Range<*const u8>) -> Self {
@@ -47,44 +96,6 @@ impl Alloqator for Alloq {
     #[inline(always)]
     fn heap_start(&self) -> *const u8 {
         self.heap_start
-    }
-
-    #[inline(always)]
-    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        let mut start = self.heap_start as *mut u8;
-        let mut end = self.heap_start as *mut u8;
-        let obj_size = (layout.size() + core::mem::size_of::<AlloqMetaData>()) as isize;
-        let is_aligned = |p: *mut u8| {
-            (p as usize) % (layout.align() + mem::size_of::<AlloqMetaData>()) == 0
-                && (p as usize) % mem::align_of::<AlloqMetaData>() == 0
-        };
-        loop {
-            if *end != 0 {
-                let metadata = end as *const AlloqMetaData;
-                end = end.offset((*metadata).total_size() as isize);
-                start = end;
-            }
-            end = end.offset(1);
-            if !is_aligned(start) && is_aligned(end) {
-                start = end;
-            }
-            if end.offset_from(start) >= obj_size && is_aligned(start) {
-                return AlloqMetaData::new(layout.size()).write_meta(start as *mut u8);
-            }
-            if end as *const u8 >= self.heap_end {
-                panic!("no available memory");
-            }
-        }
-    }
-
-    #[inline(always)]
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
-        let offset = ptr.offset(-(core::mem::size_of::<AlloqMetaData>() as isize));
-        slice::from_raw_parts_mut(
-            offset,
-            layout.size() + core::mem::size_of::<AlloqMetaData>(),
-        )
-        .fill(0)
     }
 }
 

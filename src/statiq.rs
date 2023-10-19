@@ -1,3 +1,8 @@
+use core::{
+    alloc::{AllocError, Allocator},
+    ptr::NonNull,
+};
+
 use crate::Alloqator;
 
 use spin::Mutex;
@@ -28,6 +33,16 @@ impl Alloq {
     }
 }
 
+unsafe impl Allocator for Alloq {
+    fn allocate(&self, layout: core::alloc::Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let ptr = unsafe { self.r_alloc(layout) };
+        let slice = unsafe { core::slice::from_raw_parts_mut(ptr, layout.size()) };
+        NonNull::new(slice).ok_or(AllocError)
+    }
+
+    unsafe fn deallocate(&self, _: NonNull<u8>, _: core::alloc::Layout) {}
+}
+
 impl Alloqator for Alloq {
     type Metadata = ();
 
@@ -49,12 +64,6 @@ impl Alloqator for Alloq {
     fn heap_end(&self) -> *const u8 {
         self.heap_end
     }
-
-    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        self.r_alloc(layout)
-    }
-
-    unsafe fn dealloc(&self, _: *mut u8, _: core::alloc::Layout) {}
 }
 
 crate::impl_allocator!(Alloq);

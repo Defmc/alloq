@@ -1,4 +1,9 @@
-use core::{mem, ops::Range, ptr::null_mut};
+use core::{
+    alloc::{AllocError, Allocator},
+    mem,
+    ops::Range,
+    ptr::{null_mut, NonNull},
+};
 
 use crate::Alloqator;
 use spin::Mutex;
@@ -252,6 +257,46 @@ impl Alloq {
     }
 }
 
+unsafe impl Allocator for Alloq {
+    /// Pass pre-allocated block and add its to the used list. If there's no available blocks, map
+    /// one.
+    fn allocate(&self, layout: core::alloc::Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let chunk = {
+            let mut pooler = self.pooler.lock();
+            let chunk = unsafe { pooler.get_free_chunk(self.chunk_size, layout.align()) };
+            unsafe { pooler.push_used(chunk) };
+            if unsafe {
+                (*chunk).addr.offset(layout.size() as isize)
+                    > (*chunk).chunk.offset(self.chunk_size as isize)
+            } {
+                todo!(
+                "layout (size {} bytes and align {} bytes) cannot be allocated in a chunk ({} bytes)",
+                layout.size(),
+                layout.align(),
+                self.chunk_size
+            );
+            }
+            debug_assert!(
+                self.heap_range().contains(unsafe { &(*chunk).chunk }),
+                "out of heap"
+            );
+            chunk
+        };
+        let ptr = unsafe { (*chunk).addr as *mut u8 };
+        let slice = unsafe { core::slice::from_raw_parts_mut(ptr, layout.size()) };
+        NonNull::new(slice).ok_or(AllocError)
+    }
+
+    /// Moves the block to the free list. In these newer versions, deallocating is `O(1)`, as the
+    /// block is on a constant place.
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: core::alloc::Layout) {
+        unsafe {
+            let raw_chunk = self.get_raw_chunk_from(ptr.as_ptr(), layout);
+            self.pooler.lock().remove_used(raw_chunk as *mut RawChunk);
+        }
+    }
+}
+
 // Why rustfmt is removing comments?
 // impl /*Alloqator for*/ Pool {
 impl Alloqator for Alloq {
@@ -267,35 +312,6 @@ impl Alloqator for Alloq {
 
     fn heap_end(&self) -> *const u8 {
         self.heap_end
-    }
-
-    /// Pass pre-allocated block and add its to the used list. If there's no available blocks, map
-    /// one.
-    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        let chunk = {
-            let mut pooler = self.pooler.lock();
-            let chunk = pooler.get_free_chunk(self.chunk_size, layout.align());
-            pooler.push_used(chunk);
-            if (*chunk).addr.offset(layout.size() as isize)
-                > (*chunk).chunk.offset(self.chunk_size as isize)
-            {
-                todo!(
-                "layout (size {} bytes and align {} bytes) cannot be allocated in a chunk ({} bytes)",
-                layout.size(),
-                layout.align(),
-                self.chunk_size
-            );
-            }
-            debug_assert!(self.heap_range().contains(&(*chunk).chunk), "out of heap");
-            chunk
-        };
-        (*chunk).addr as *mut u8
-    }
-
-    /// Moves the block to the free list
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
-        let raw_chunk = self.get_raw_chunk_from(ptr, layout);
-        self.pooler.lock().remove_used(raw_chunk as *mut RawChunk);
     }
 
     fn reset(&self) {
