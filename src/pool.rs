@@ -283,7 +283,12 @@ unsafe impl Allocator for Alloq {
             chunk
         };
         let ptr = unsafe { (*chunk).addr as *mut u8 };
-        let slice = unsafe { core::slice::from_raw_parts_mut(ptr, layout.size()) };
+        let slice = unsafe {
+            core::slice::from_raw_parts_mut(
+                ptr,
+                self.chunk_size - (*chunk).addr.offset(-((*chunk).chunk as isize)) as usize,
+            )
+        };
         NonNull::new(slice).ok_or(AllocError)
     }
 
