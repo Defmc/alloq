@@ -6,6 +6,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fs::{self, File},
     hash::{Hash, Hasher},
+    hint::black_box,
     io::{BufWriter, Write},
     time::{self, Duration, Instant, SystemTime},
 };
@@ -66,21 +67,25 @@ fn main() {
     run_test!(dir, linear_deallocation, &bump, &debump, &pool);
     run_test!(dir, reverse_deallocation, &bump, &debump, &pool);
     run_test!(dir, vector_pushing, &bump, &debump, &pool);
+    run_test!(dir, vector_fragmentation, &bump, &debump, &pool);
     run_test!(dir, reset, &bump, &debump, &pool);
 }
 
 fn linear_allocation(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
     let layout = Layout::from_size_align(32, 2).unwrap();
-    test_and_clear(a, || {
+    let mut v = Vec::with_capacity(n);
+    let t = test_and_clear(a, || {
         for _x in 0..n {
-            unsafe { a.alloc(layout) };
+            v.push(a.alloc(layout));
         }
-    })
+    });
+    assert!(v.iter().all(|p| !p.is_null()));
+    t
 }
 
 fn linear_deallocation(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
     let layout = Layout::from_size_align(32, 2).unwrap();
-    let ptrs: Vec<_> = (0..n).map(|_| unsafe { a.alloc(layout) }).collect();
+    let ptrs: Vec<_> = (0..n).map(|_| a.alloc(layout)).collect();
     test_and_clear(a, || {
         for ptr in ptrs {
             unsafe { a.dealloc(ptr.clone(), layout) };
@@ -90,7 +95,7 @@ fn linear_deallocation(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
 
 fn reverse_deallocation(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
     let layout = Layout::from_size_align(32, 2).unwrap();
-    let ptrs: Vec<_> = (0..n).map(|_| unsafe { a.alloc(layout) }).collect();
+    let ptrs: Vec<_> = (0..n).map(|_| a.alloc(layout)).collect();
     test_and_clear(a, || {
         for ptr in ptrs.iter().rev() {
             unsafe { a.dealloc(ptr.clone(), layout) };
@@ -105,10 +110,33 @@ fn vector_pushing(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
             v.push(x);
         }
     });
-    assert_eq!(v.iter().sum::<usize>(), (0..n).sum::<usize>());
+    assert_eq!(v.iter().sum::<usize>(), black_box((0..n).sum::<usize>()));
     t
 }
 
 fn reset(a: &(impl Allocator + Alloqator), _n: usize) -> Duration {
     test_and_clear(a, || a.reset())
+}
+
+fn vector_fragmentation(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
+    let mut v1 = Vec::new_in(&a);
+    let mut v2 = Vec::new_in(&a);
+    let mut v3 = Vec::new_in(&a);
+    let t = test_and_clear(a, || {
+        for x in 0..(n as isize) {
+            match x {
+                _ if x % 2 == 0 => v1.push(x),
+                _ if x % 1 == 1 => v2.push(x),
+                _ => unreachable!(),
+            }
+            v3.push(-x);
+        }
+    });
+    assert!(v1.iter().all(|x| x % 2 == 0));
+    assert!(v2.iter().all(|x| x % 2 == 1));
+    assert_eq!(
+        v1.iter().chain(v2.iter()).sum::<isize>(),
+        v3.iter().sum::<isize>()
+    );
+    t
 }
