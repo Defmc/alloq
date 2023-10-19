@@ -37,6 +37,7 @@ macro_rules! run_test {
         write!(w, "count, ").unwrap();
         $(write!(w, "{}, ", std::any::type_name_of_val($alloq)).unwrap();)*
         writeln!(w, "").unwrap();
+        println!("benchmarking {}", stringify!($name));
         for n in (0..=TEST_COUNT).step_by(10) {
             write!(w, "{n}, ").unwrap();
             let ts = [$($name($alloq, n),)*];
@@ -57,18 +58,22 @@ fn main() {
     let dir = format!("alloq-bench-{}", hasher.finish());
     fs::create_dir(&dir).expect("can't create a directory");
 
+    println!("preparing alloqators");
+
     let heap_ptr_range = unsafe { HEAP_SIM.as_ptr_range() };
     let bump = bump::Alloq::new(heap_ptr_range.clone());
     let debump = debump::Alloq::new(heap_ptr_range.clone());
     let pool =
         unsafe { pool::Alloq::with_chunk_size(heap_ptr_range.clone(), HEAP_SIM_SIZE / 1024, 2) };
 
+    println!("running benchmarks");
     run_test!(dir, linear_allocation, &bump, &debump, &pool);
     run_test!(dir, linear_deallocation, &bump, &debump, &pool);
     run_test!(dir, reverse_deallocation, &bump, &debump, &pool);
     run_test!(dir, vector_pushing, &bump, &debump, &pool);
     run_test!(dir, vector_fragmentation, &bump, &debump, &pool);
     run_test!(dir, reset, &bump, &debump, &pool);
+    println!("benchmarks results saved on {dir}");
 }
 
 fn linear_allocation(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
@@ -79,7 +84,11 @@ fn linear_allocation(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
             v.push(a.alloc(layout));
         }
     });
-    assert!(v.iter().all(|p| !p.is_null()));
+    assert!(
+        v.iter().all(|p| !p.is_null()),
+        "linear_allocation assert error: {} can't allocate memory",
+        std::any::type_name_of_val(a)
+    );
     t
 }
 
@@ -104,13 +113,18 @@ fn reverse_deallocation(a: &(impl Allocator + Alloqator), n: usize) -> Duration 
 }
 
 fn vector_pushing(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
-    let mut v = Vec::new_in(&a);
+    let mut v = Vec::new_in(a);
     let t = test_and_clear(a, || {
         for x in 0..n {
             v.push(x);
         }
     });
-    assert_eq!(v.iter().sum::<usize>(), black_box((0..n).sum::<usize>()));
+    assert_eq!(
+        v.iter().sum::<usize>(),
+        black_box((0..n).sum::<usize>()),
+        "vector_pushing asser error: {} can't handle reallocs",
+        std::any::type_name_of_val(a)
+    );
     t
 }
 
@@ -119,24 +133,34 @@ fn reset(a: &(impl Allocator + Alloqator), _n: usize) -> Duration {
 }
 
 fn vector_fragmentation(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
-    let mut v1 = Vec::new_in(&a);
-    let mut v2 = Vec::new_in(&a);
-    let mut v3 = Vec::new_in(&a);
+    let mut v1 = Vec::new_in(a);
+    let mut v2 = Vec::new_in(a);
+    let mut v3 = Vec::new_in(a);
     let t = test_and_clear(a, || {
         for x in 0..(n as isize) {
-            match x {
-                _ if x % 2 == 0 => v1.push(x),
-                _ if x % 1 == 1 => v2.push(x),
-                _ => unreachable!(),
+            if x % 2 == 0 {
+                v1.push(x);
+            } else {
+                v2.push(x);
             }
             v3.push(-x);
         }
     });
-    assert!(v1.iter().all(|x| x % 2 == 0));
-    assert!(v2.iter().all(|x| x % 2 == 1));
+    assert!(
+        v1.iter().all(|x| x % 2 == 0),
+        "vector_fragmentation assert error: {} can't handle multiple reallocs",
+        std::any::type_name_of_val(a)
+    );
+    assert!(
+        v2.iter().all(|x| x % 2 == 1),
+        "vector_fragmentation assert error: {} can't handle multiple reallocs",
+        std::any::type_name_of_val(a)
+    );
     assert_eq!(
         v1.iter().chain(v2.iter()).sum::<isize>(),
-        v3.iter().sum::<isize>()
+        -v3.iter().sum::<isize>(),
+        "vector_fragmentation assert error: {} can't handle multiple reallocs",
+        std::any::type_name_of_val(a)
     );
     t
 }
