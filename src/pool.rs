@@ -127,7 +127,7 @@ impl RawChunk {
     }
 
     pub fn log_list(&self) {
-        for node in unsafe { (*self.first()).iter() } {
+        for _node in unsafe { (*self.first()).iter() } {
             //    std::print!("({node:?}) .:. {:?} -> ", unsafe { &*node });
         }
         //std::println!("{:?}", null_mut::<Self>());
@@ -348,7 +348,7 @@ pub mod tests {
         let heap = [0u8; 512 * 8];
         let alloqer = Alloq::new(heap.as_ptr_range());
         let layout = Layout::from_size_align(32, 2).unwrap();
-        let ptr = unsafe { alloqer.alloc(layout) };
+        let ptr = alloqer.alloc(layout);
         unsafe { alloqer.dealloc(ptr, layout) };
     }
 
@@ -359,7 +359,7 @@ pub mod tests {
         let layout = Layout::from_size_align(32, 2).unwrap();
         let mut chunks_allocated = [null_mut(); 4];
         for chunk in chunks_allocated.iter_mut() {
-            *chunk = unsafe { alloqer.alloc(layout) };
+            *chunk = alloqer.alloc(layout);
         }
 
         for &mut chunk in chunks_allocated.iter_mut() {
@@ -374,7 +374,7 @@ pub mod tests {
         let layout = Layout::from_size_align(32, 2).unwrap();
         let mut chunks_allocated = [null_mut(); 4];
         for chunk in chunks_allocated.iter_mut() {
-            *chunk = unsafe { alloqer.alloc(layout) };
+            *chunk = alloqer.alloc(layout);
         }
 
         for &mut chunk in chunks_allocated.iter_mut().rev() {

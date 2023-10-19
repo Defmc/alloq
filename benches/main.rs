@@ -72,7 +72,7 @@ fn main() {
 fn linear_allocation(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
     let layout = Layout::from_size_align(32, 2).unwrap();
     test_and_clear(a, || {
-        for x in 0..n {
+        for _x in 0..n {
             unsafe { a.alloc(layout) };
         }
     })
@@ -109,6 +109,6 @@ fn vector_pushing(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
     t
 }
 
-fn reset(a: &(impl Allocator + Alloqator), n: usize) -> Duration {
+fn reset(a: &(impl Allocator + Alloqator), _n: usize) -> Duration {
     test_and_clear(a, || a.reset())
 }

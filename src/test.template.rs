@@ -10,7 +10,7 @@ fn simple_alloc() {
     let heap = [0u8; 512 * 8];
     let alloqer = Alloq::new(heap.as_ptr_range());
     let layout = Layout::from_size_align(32, 2).unwrap();
-    let ptr = unsafe { alloqer.alloc(layout) };
+    let ptr = alloqer.alloc(layout);
     unsafe { alloqer.dealloc(ptr, layout) };
 }
 
@@ -21,7 +21,7 @@ fn linear_allocs() {
     let layout = Layout::from_size_align(32, 2).unwrap();
     let mut chunks_allocated = [null_mut(); 4];
     for chunk in chunks_allocated.iter_mut() {
-        *chunk = unsafe { alloqer.alloc(layout) };
+        *chunk = alloqer.alloc(layout);
     }
 
     for &mut chunk in chunks_allocated.iter_mut() {
@@ -36,7 +36,7 @@ fn stack_allocs() {
     let layout = Layout::from_size_align(32, 2).unwrap();
     let mut chunks_allocated = [null_mut(); 4];
     for chunk in chunks_allocated.iter_mut() {
-        *chunk = unsafe { alloqer.alloc(layout) };
+        *chunk = alloqer.alloc(layout);
     }
 
     for &mut chunk in chunks_allocated.iter_mut().rev() {
