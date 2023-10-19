@@ -1,5 +1,4 @@
 #![feature(allocator_api)]
-#![feature(pointer_is_aligned)]
 #![no_std]
 
 use core::{alloc::Layout, mem, ops::Range, ptr::NonNull};

@@ -56,7 +56,7 @@ impl Alloqator for Alloq {
         let obj_size = (layout.size() + core::mem::size_of::<AlloqMetaData>()) as isize;
         let is_aligned = |p: *mut u8| {
             (p as usize) % (layout.align() + mem::size_of::<AlloqMetaData>()) == 0
-                && p.is_aligned_to(mem::align_of::<AlloqMetaData>())
+                && (p as usize) % mem::align_of::<AlloqMetaData>() == 0
         };
         loop {
             if *end != 0 {
