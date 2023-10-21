@@ -1,5 +1,6 @@
 use core::{
     alloc::{AllocError, Allocator, Layout},
+    cmp,
     marker::PhantomData,
     mem,
     ops::Range,
@@ -65,12 +66,16 @@ impl AlloqMetaData {
         back.next = next as *mut Self;
         next.back = back as *mut Self;
     }
+
+    pub fn iter(&self) -> AlloqMetaDataIter {
+        AlloqMetaDataIter(self as *const AlloqMetaData)
+    }
 }
 
-pub struct AlloqMetaDataIter(*mut AlloqMetaData);
+pub struct AlloqMetaDataIter(*const AlloqMetaData);
 
 impl Iterator for AlloqMetaDataIter {
-    type Item = *mut AlloqMetaData;
+    type Item = *const AlloqMetaData;
     fn next(&mut self) -> Option<Self::Item> {
         let r = self.0;
         if r.is_null() {
@@ -86,8 +91,22 @@ pub trait AllocMethod {
     fn fit(
         first_and_end: (&mut AlloqMetaData, &mut AlloqMetaData),
         layout: Layout,
-    ) -> Range<*const u8>;
-    fn remove(first_and_end: (&mut AlloqMetaData, &mut AlloqMetaData), ptr: *mut u8);
+    ) -> (*mut AlloqMetaData, *const u8);
+    fn remove(
+        first_and_end: (&mut AlloqMetaData, &mut AlloqMetaData),
+        ptr: *mut u8,
+        layout: Layout,
+    ) {
+        let end = unsafe { ptr.offset(layout.size() as isize) };
+        for node_ptr in first_and_end.0.iter() {
+            let node = unsafe { &mut *(node_ptr as *mut AlloqMetaData) };
+            if node.end == end {
+                node.disconnect();
+                return;
+            }
+        }
+        panic!("use-after-free");
+    }
 }
 
 pub struct FirstFit;
@@ -95,11 +114,8 @@ impl AllocMethod for FirstFit {
     fn fit(
         (first, end): (&mut AlloqMetaData, &mut AlloqMetaData),
         layout: Layout,
-    ) -> Range<*const u8> {
-        todo!()
-    }
-    fn remove((first, end): (&mut AlloqMetaData, &mut AlloqMetaData), ptr: *mut u8) {
-        todo!()
+    ) -> (*mut AlloqMetaData, *const u8) {
+        panic!("no available memory");
     }
 }
 
@@ -108,10 +124,7 @@ impl AllocMethod for NextFit {
     fn fit(
         (first, end): (&mut AlloqMetaData, &mut AlloqMetaData),
         layout: Layout,
-    ) -> Range<*const u8> {
-        todo!()
-    }
-    fn remove((first, end): (&mut AlloqMetaData, &mut AlloqMetaData), ptr: *mut u8) {
+    ) -> (*mut AlloqMetaData, *const u8) {
         todo!()
     }
 }
@@ -121,10 +134,7 @@ impl AllocMethod for BestFit {
     fn fit(
         (first, end): (&mut AlloqMetaData, &mut AlloqMetaData),
         layout: Layout,
-    ) -> Range<*const u8> {
-        todo!()
-    }
-    fn remove((first, end): (&mut AlloqMetaData, &mut AlloqMetaData), ptr: *mut u8) {
+    ) -> (*mut AlloqMetaData, *const u8) {
         todo!()
     }
 }
@@ -159,8 +169,15 @@ unsafe impl<A: AllocMethod> Allocator for Alloq<A> {
             }
         } else {
             unsafe {
-                let fit = A::fit((&mut *lock.0, &mut *lock.1), layout);
-                let meta = AlloqMetaData::allocate(lock.0, fit, layout);
+                let (back, fit) = A::fit((&mut *lock.0, &mut *lock.1), layout);
+                let back = &mut *back;
+                let back_limit = if back.next.is_null() {
+                    self.heap_end() as *const u8
+                } else {
+                    back.next as *const u8
+                };
+                let end = cmp::min(back_limit, self.heap_end());
+                let meta = AlloqMetaData::allocate(back, fit..end, layout);
                 lock.1 = meta.1;
                 meta.0.end.offset(-(layout.size() as isize))
             }
@@ -169,9 +186,9 @@ unsafe impl<A: AllocMethod> Allocator for Alloq<A> {
         NonNull::new(slice).ok_or(AllocError)
     }
 
-    unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, _: core::alloc::Layout) {
+    unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: core::alloc::Layout) {
         let mut lock = self.first.lock();
-        A::remove((&mut *lock.0, &mut *lock.1), ptr.as_ptr());
+        A::remove((&mut *lock.0, &mut *lock.1), ptr.as_ptr(), layout);
         // TODO: Support remove from `first` and `end`
     }
 }
