@@ -198,3 +198,40 @@ impl<A: AllocMethod> Alloqator for Alloq<A> {
         self.heap_end
     }
 }
+
+pub mod first {
+    use super::{Alloq as Al, FirstFit};
+
+    pub type Alloq = Al<FirstFit>;
+
+    #[cfg(test)]
+    pub mod tests {
+        use super::Alloq;
+
+        include!("test.template.rs");
+    }
+}
+pub mod next {
+    use super::{Alloq as Al, NextFit};
+
+    pub type Alloq = Al<NextFit>;
+
+    #[cfg(test)]
+    pub mod tests {
+        use super::Alloq;
+
+        include!("test.template.rs");
+    }
+}
+pub mod best {
+    use super::{Alloq as Al, BestFit};
+
+    pub type Alloq = Al<BestFit>;
+
+    #[cfg(test)]
+    pub mod tests {
+        use super::Alloq;
+
+        include!("test.template.rs");
+    }
+}
