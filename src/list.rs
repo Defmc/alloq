@@ -115,6 +115,19 @@ impl AllocMethod for FirstFit {
         (first, end): (&mut AlloqMetaData, &mut AlloqMetaData),
         layout: Layout,
     ) -> (*mut AlloqMetaData, *const u8) {
+        for node_ptr in first.iter() {
+            let node = unsafe { *node_ptr };
+            let end = node.end;
+            let align = crate::align_up(end as usize, layout.align());
+            let obj_end = unsafe { (align as *const u8).offset(layout.size() as isize) };
+            if node.next.is_null() {
+                // TODO: Check if don't overflow heap
+                return (node_ptr as *mut AlloqMetaData, obj_end);
+            }
+            if obj_end <= end {
+                return (node_ptr as *mut AlloqMetaData, align as *const u8);
+            }
+        }
         panic!("no available memory");
     }
 }
