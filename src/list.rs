@@ -23,8 +23,13 @@ impl AlloqMetaData {
         range: Range<*const u8>,
         layout: Layout,
     ) -> (Self, *mut Self) {
+        let range_start = if list.is_null() {
+            range.start
+        } else {
+            (*list).end
+        };
         let aligned_meta =
-            crate::align_up(range.start as usize, mem::align_of::<Self>()) as *mut u8;
+            crate::align_up(range_start as usize, mem::align_of::<Self>()) as *mut u8;
         let aligned_val = crate::align_up(
             aligned_meta.offset(mem::size_of::<Self>() as isize) as usize,
             layout.align(),
@@ -44,27 +49,32 @@ impl AlloqMetaData {
         (s, s.write(aligned_meta) as *mut Self)
     }
     pub unsafe fn write(&self, ptr: *mut u8) -> *mut u8 {
-        let aligned = crate::align_up(ptr as usize, mem::align_of::<Self>()) as *mut Self;
-        *aligned = *self;
-        aligned as *mut u8
+        *(ptr as *mut Self) = *self;
+        ptr as *mut u8
     }
 
     pub fn disconnect(&mut self) {
+        let next = self.next;
+        let back = self.back;
         if !self.back.is_null() {
-            unsafe {
-                (*self.back).next = self.next;
-            }
+            unsafe { *back }.next = next;
         }
         if !self.next.is_null() {
-            unsafe {
-                (*self.next).back = self.back;
-            }
+            unsafe { *next }.back = back;
         }
+        self.next = ptr::null_mut();
+        self.back = ptr::null_mut();
     }
 
     pub unsafe fn connect_unchecked(back: &mut Self, next: &mut Self) {
         back.next = next as *mut Self;
         next.back = back as *mut Self;
+    }
+
+    pub fn end_of_allocation(ptr: *mut u8, layout: Layout) -> *mut u8 {
+        let align = crate::align_up(ptr as usize, mem::align_of::<Self>());
+        let obj_align = crate::align_up(align + mem::size_of::<Self>(), layout.align());
+        (obj_align + layout.size()) as *mut u8
     }
 
     pub fn iter(&self) -> AlloqMetaDataIter {
@@ -88,67 +98,87 @@ impl Iterator for AlloqMetaDataIter {
 }
 
 pub trait AllocMethod {
+    // TODO: Allocate before first
     fn fit(
         first_and_end: (&mut AlloqMetaData, &mut AlloqMetaData),
         layout: Layout,
-    ) -> (*mut AlloqMetaData, *const u8);
+    ) -> *mut AlloqMetaData;
     fn remove(
         first_and_end: (&mut AlloqMetaData, &mut AlloqMetaData),
         ptr: *mut u8,
         layout: Layout,
     ) {
+        extern crate std;
         let end = unsafe { ptr.offset(layout.size() as isize) };
-        for node_ptr in first_and_end.0.iter() {
-            let node = unsafe { &mut *(node_ptr as *mut AlloqMetaData) };
-            if node.end == end {
-                node.disconnect();
-                return;
-            }
-        }
-        panic!("use-after-free");
+        let node = first_and_end
+            .0
+            .iter()
+            .find(|&n| {
+                std::println!("comparing {:?} and {end:?}", unsafe { *n }.end);
+                unsafe { *n }.end == end
+            })
+            .expect("use after free");
+        std::println!("matched");
+        unsafe { &mut *(node as *mut AlloqMetaData) }.disconnect();
     }
 }
 
 pub struct FirstFit;
 impl AllocMethod for FirstFit {
     fn fit(
-        (first, end): (&mut AlloqMetaData, &mut AlloqMetaData),
+        (first, _): (&mut AlloqMetaData, &mut AlloqMetaData),
         layout: Layout,
-    ) -> (*mut AlloqMetaData, *const u8) {
+    ) -> *mut AlloqMetaData {
         for node_ptr in first.iter() {
             let node = unsafe { *node_ptr };
-            let end = node.end;
-            let align = crate::align_up(end as usize, layout.align());
-            let obj_end = unsafe { (align as *const u8).offset(layout.size() as isize) };
+            let obj_end = AlloqMetaData::end_of_allocation(node.end as *mut u8, layout);
             if node.next.is_null() {
                 // TODO: Check if don't overflow heap
-                return (node_ptr as *mut AlloqMetaData, obj_end);
-            }
-            if obj_end <= end {
-                return (node_ptr as *mut AlloqMetaData, align as *const u8);
+                return node_ptr as *mut AlloqMetaData;
+            } else if obj_end <= node.next as *mut u8 {
+                return node_ptr as *mut AlloqMetaData;
             }
         }
         panic!("no available memory");
     }
 }
 
-pub struct NextFit;
-impl AllocMethod for NextFit {
-    fn fit(
-        (first, end): (&mut AlloqMetaData, &mut AlloqMetaData),
-        layout: Layout,
-    ) -> (*mut AlloqMetaData, *const u8) {
-        todo!()
-    }
-}
+// TODO: Impl next-fit.
+// As it demands a internal mutation and the last allocation, its raise a lot of implementation
+// questions:
+// - Should the entire api change just for that?
+// - ~~What should happen when the last allocation is invalid?~~ (just check on `remove`)
+// - Store the heap end is a problem when it can be moved or expanded
 
 pub struct BestFit;
 impl AllocMethod for BestFit {
     fn fit(
         (first, end): (&mut AlloqMetaData, &mut AlloqMetaData),
         layout: Layout,
-    ) -> (*mut AlloqMetaData, *const u8) {
-        todo!()
+    ) -> *mut AlloqMetaData {
+        let mut best = ptr::null_mut();
+        let mut dispersion = usize::MAX;
+        let mut align = ptr::null();
+        for node_ptr in first.iter() {
+            let node = unsafe { *node_ptr };
+            let obj_end = AlloqMetaData::end_of_allocation(node.end as *mut u8, layout);
+            if obj_end <= node.next as *mut u8 {
+                let disp = unsafe { (node.next as *mut u8).offset_from(obj_end) } as usize;
+                // Get dispersion from `back` also
+                if disp < dispersion {
+                    best = node_ptr as *mut AlloqMetaData;
+                    align = crate::align_up(node_ptr as usize, mem::align_of::<AlloqMetaData>())
+                        as *const u8;
+                    dispersion = disp;
+                }
+            }
+        }
+        if best.is_null() {
+            end
+        } else {
+            assert!(align.is_null(), "extern modification");
+            best
+        }
     }
 }
 
@@ -182,15 +212,8 @@ unsafe impl<A: AllocMethod> Allocator for Alloq<A> {
             }
         } else {
             unsafe {
-                let (back, fit) = A::fit((&mut *lock.0, &mut *lock.1), layout);
-                let back = &mut *back;
-                let back_limit = if back.next.is_null() {
-                    self.heap_end() as *const u8
-                } else {
-                    back.next as *const u8
-                };
-                let end = cmp::min(back_limit, self.heap_end());
-                let meta = AlloqMetaData::allocate(back, fit..end, layout);
+                let back = A::fit((&mut *lock.0, &mut *lock.1), layout);
+                let meta = AlloqMetaData::allocate(back, self.heap_range(), layout);
                 lock.1 = meta.1;
                 meta.0.end.offset(-(layout.size() as isize))
             }
@@ -202,7 +225,6 @@ unsafe impl<A: AllocMethod> Allocator for Alloq<A> {
     unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: core::alloc::Layout) {
         let mut lock = self.first.lock();
         A::remove((&mut *lock.0, &mut *lock.1), ptr.as_ptr(), layout);
-        // TODO: Support remove from `first` and `end`
     }
 }
 
@@ -241,18 +263,7 @@ pub mod first {
         include!("test.template.rs");
     }
 }
-pub mod next {
-    use super::{Alloq as Al, NextFit};
 
-    pub type Alloq = Al<NextFit>;
-
-    #[cfg(test)]
-    pub mod tests {
-        use super::Alloq;
-
-        include!("test.template.rs");
-    }
-}
 pub mod best {
     use super::{Alloq as Al, BestFit};
 
