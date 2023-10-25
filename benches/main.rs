@@ -24,8 +24,8 @@ fn get_time(f: impl FnOnce()) -> Duration {
 }
 
 fn test_and_clear(a: &impl Alloqator, f: impl FnOnce()) -> Duration {
+    unsafe { a.reset() };
     let time = get_time(f);
-    a.reset();
     time
 }
 
@@ -80,7 +80,7 @@ fn main() {
     let statiq = statiq::Alloq::new(unsafe { HEAP_SIM.as_ptr_range() });
 
     println!("running benchmarks");
-    run_benches!(dir, &bump, &debump, &pool, &first, &best, &statiq);
+    run_benches!(dir, &first, &best, &bump, &debump, &pool, &statiq);
     println!("benchmarks results saved on {dir}");
 }
 
@@ -94,8 +94,8 @@ fn linear_allocation<A: Alloqator>(a: &A, n: usize) -> Duration {
     });
     assert!(
         v.iter().all(|p| !p.is_null()),
-        "linear_allocation assert error: {} can't allocate memory",
-        std::any::type_name_of_val(a)
+        "linear_allocation assert error: {}:{n} can't allocate memory",
+        std::any::type_name::<A>()
     );
     t
 }
@@ -130,14 +130,14 @@ fn vector_pushing<A: Alloqator>(a: &A, n: usize) -> Duration {
     assert_eq!(
         v.iter().sum::<usize>(),
         black_box((0..n).sum::<usize>()),
-        "vector_pushing asser error: {} can't handle reallocs",
-        std::any::type_name_of_val(a)
+        "vector_pushing assert error: {}:{n} can't handle reallocs",
+        std::any::type_name::<A>()
     );
     t
 }
 
 fn reset<A: Alloqator>(a: &A, _n: usize) -> Duration {
-    test_and_clear(a, || a.reset())
+    test_and_clear(a, || unsafe { a.reset() })
 }
 
 fn vector_fragmentation<A: Alloqator>(a: &A, n: usize) -> Duration {
@@ -156,19 +156,19 @@ fn vector_fragmentation<A: Alloqator>(a: &A, n: usize) -> Duration {
     });
     assert!(
         v1.iter().all(|x| x % 2 == 0),
-        "vector_fragmentation assert error (v1 contains odds numbers): {} can't handle multiple reallocs",
-        std::any::type_name_of_val(a)
+        "vector_fragmentation assert error (v1 contains odds numbers): {}:{n} can't handle multiple reallocs",
+        std::any::type_name::<A>()
     );
     assert!(
         v2.iter().all(|x| x % 2 == 1),
-        "vector_fragmentation assert error (v2 contains even numbers): {} can't handle multiple reallocs",
-        std::any::type_name_of_val(a)
+        "vector_fragmentation assert error (v2 contains even numbers): {}:{n} can't handle multiple reallocs",
+        std::any::type_name::<A>()
     );
     assert_eq!(
         v1.iter().chain(v2.iter()).sum::<isize>(),
         -v3.iter().sum::<isize>(),
-        "vector_fragmentation assert error (sum of v3 is not equal to inverse of v1 + v2): {} can't handle multiple reallocs",
-        std::any::type_name_of_val(a)
+        "vector_fragmentation assert error (sum of v3 is not equal to inverse of v1 + v2): {}:{n} can't handle multiple reallocs",
+        std::any::type_name::<A>()
     );
     t
 }

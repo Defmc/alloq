@@ -50,7 +50,18 @@ pub trait Alloqator: Allocator {
     where
         Self: Sized;
 
-    fn reset(&self);
+    /// Resets the allocator, allowing it to allocate in the entire heap again. You should garantee
+    /// there is no current allocation. `Alloqator::reset` must be able to handle memory
+    /// corruptions.
+    unsafe fn reset(&self);
+
+    /// Resets the allocator and the heap. Cross-using more than one allocator can result in memory
+    /// corruption, like `crate::pool` and `crate::list`, where the first uses the heap start for
+    /// the values, while the second, as metadata
+    unsafe fn hard_reset(&self) {
+        let len = self.heap_end().offset_from(self.heap_start()) as usize;
+        core::slice::from_raw_parts_mut(self.heap_start().cast_mut(), len).fill(0);
+    }
 
     fn heap_start(&self) -> *const u8;
     fn heap_end(&self) -> *const u8;
