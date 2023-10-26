@@ -11,7 +11,7 @@ use std::{
     time::{self, Duration, Instant, SystemTime},
 };
 
-use alloq::{bump, debump, list::best, list::first, pool, statiq, Alloqator};
+use alloq::{bump, debump, list::best, list::first, pool, statiq, system, Alloqator};
 
 pub const HEAP_SIM_SIZE: usize = 1024 * 1024 * 512;
 pub static mut HEAP_SIM: [u8; HEAP_SIM_SIZE] = [0u8; HEAP_SIM_SIZE];
@@ -72,9 +72,10 @@ fn main() {
     let first = first::Alloq::new(unsafe { HEAP_SIM.as_ptr_range() });
     let best = best::Alloq::new(unsafe { HEAP_SIM.as_ptr_range() });
     let statiq = statiq::Alloq::new(unsafe { HEAP_SIM.as_ptr_range() });
+    let system = system::Alloq::new(unsafe { HEAP_SIM.as_ptr_range() });
 
     println!("running benchmarks");
-    run_benches!(dir, &first, &best, &bump, &debump, &pool, &statiq);
+    run_benches!(dir, &first, &best, &bump, &debump, &pool, &statiq, &system);
     println!("benchmarks results saved on {dir}");
 }
 

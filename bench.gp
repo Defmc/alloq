@@ -16,7 +16,8 @@ do for [source in sources] {
          source using 1:4 title "bump" with lines linewidth 3, \
          source using 1:5 title "debump" with lines linewidth 3, \
          source using 1:6 title "pool" with lines linewidth 3, \
-         source using 1:7 title "statiq" with lines linewidth 3
+         source using 1:7 title "statiq" with lines linewidth 3, \
+         source using 1:8 title "system" with lines linewidth 3 
 }
 
 unset multiplot
