@@ -40,7 +40,6 @@ macro_rules! unit_bench {
         for n in (0..=TEST_COUNT).step_by(10) {
             write!(w, "{n}, ").unwrap();
             $(
-                std::println!("testing on {}...", stringify!($alloq));
                 let t = $name($alloq, n);
                 write!(w, "{}, ", t.as_nanos()).unwrap();
             )*
