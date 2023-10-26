@@ -205,7 +205,6 @@ impl Pool {
         }
         raw_chunk.insert_in_list(last_free);
         self.free_last = raw_chunk_ptr;
-        //panic!("double-free on {addr:?}");
     }
 }
 
@@ -295,6 +294,9 @@ unsafe impl Allocator for Alloq {
 
     /// Moves the block to the free list. In these newer versions, deallocating is `O(1)`, as the
     /// block is on a constant place.
+    /// Unsafe:
+    /// - It's Undefined Behaviour to double-free a value. It can enter twice in the `used` stack
+    ///   and be shared across two objects them.
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: core::alloc::Layout) {
         unsafe {
             let raw_chunk = self.get_raw_chunk_from(ptr.as_ptr(), layout);
@@ -530,5 +532,29 @@ pub mod tests {
             v1.iter().chain(v2.iter()).sum::<isize>(),
             -v3.iter().sum::<isize>()
         )
+    }
+
+    #[test]
+    fn trash_heap() {
+        let heap_stackish: [u8; 1024] = core::array::from_fn(|x| (x % 255) as u8);
+        let alloqer = Alloq::new(heap_stackish.as_ptr_range());
+        let mut v = Vec::new_in(&alloqer);
+        for x in 0..10 {
+            v.push(x);
+        }
+        assert_eq!(v.iter().sum::<i32>(), 45i32);
+    }
+
+    #[test]
+    fn corrupted_heap() {
+        let mut heap_stackish: [u8; 1024] = [0; 1024];
+        let alloqer = Alloq::new(heap_stackish.as_ptr_range());
+        heap_stackish.fill(0);
+        unsafe { alloqer.reset() };
+        let mut v = Vec::new_in(&alloqer);
+        for x in 0..10 {
+            v.push(x);
+        }
+        assert_eq!(v.iter().sum::<i32>(), 45i32);
     }
 }

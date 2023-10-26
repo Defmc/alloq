@@ -2,7 +2,7 @@ use core::{
     alloc::{AllocError, Allocator, Layout},
     marker::PhantomData,
     mem,
-    ops::{DerefMut, Range},
+    ops::Range,
     ptr::{self, NonNull},
     slice,
 };
@@ -205,6 +205,7 @@ pub struct Alloq<A: AllocMethod = FirstFit> {
 impl<A: AllocMethod> Alloq<A> {}
 
 unsafe impl<A: AllocMethod> Allocator for Alloq<A> {
+    /// Allocates a block according to where `A::fit` says that would be adequated.
     fn allocate(
         &self,
         layout: core::alloc::Layout,
@@ -222,8 +223,11 @@ unsafe impl<A: AllocMethod> Allocator for Alloq<A> {
         NonNull::new(slice).ok_or(AllocError)
     }
 
+    /// Goes over the linked list searching by a correspondent `end`.
+    /// Unsafe:
+    /// - `first` must refer to a valid and never-deallocate block.
     unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: core::alloc::Layout) {
-        let mut lock = self.first.lock();
+        let lock = self.first.lock();
         A::remove(&mut (lock.0, lock.1), ptr.as_ptr(), layout);
     }
 }
