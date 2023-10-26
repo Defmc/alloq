@@ -320,7 +320,7 @@ impl Alloqator for Alloq {
         self.heap_end
     }
 
-    fn reset(&self) {
+    unsafe fn reset(&self) {
         let mut pooler = self.pooler.lock();
         let mut end = self.heap_end() as *const RawChunk;
         let free_last = unsafe {

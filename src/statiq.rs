@@ -65,7 +65,7 @@ impl Alloqator for Alloq {
         self.heap_end
     }
 
-    fn reset(&self) {
+    unsafe fn reset(&self) {
         let mut lock = self.end.lock();
         lock.0 = self.heap_start();
         lock.1 = self.heap_end();

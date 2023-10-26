@@ -2,12 +2,14 @@ use core::{
     alloc::{AllocError, Allocator, Layout},
     marker::PhantomData,
     mem,
-    ops::Range,
+    ops::{DerefMut, Range},
     ptr::{self, NonNull},
     slice,
 };
 
 use crate::Alloqator;
+
+extern crate std;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AlloqMetaData {
@@ -27,6 +29,11 @@ impl AlloqMetaData {
         } else {
             (*list).end
         };
+        let range_end = if list.is_null() || (*list).next.is_null() {
+            range.end
+        } else {
+            (*list).next.cast::<u8>().cast_const()
+        };
         let aligned_meta =
             crate::align_up(range_start as usize, mem::align_of::<Self>()) as *mut u8;
         let aligned_val = crate::align_up(
@@ -39,15 +46,21 @@ impl AlloqMetaData {
             back: list,
         };
         assert!(
-            aligned_val.offset(layout.size() as isize).cast_const() <= range.end,
+            aligned_val.offset(layout.size() as isize).cast_const() <= range_end,
             "no available memory"
         );
         let s_ptr = s.write(aligned_meta);
         if !list.is_null() {
-            Self::connect_unchecked(list.as_mut().unwrap(), s_ptr.as_mut().unwrap());
+            let list_obj = list.as_mut().unwrap();
+            let s_obj = s_ptr.as_mut().unwrap();
+            if !list_obj.next.is_null() {
+                Self::connect_unchecked(s_obj, list_obj.next.as_mut().unwrap());
+            }
+            Self::connect_unchecked(list_obj, s_obj);
         }
         (s, s_ptr)
     }
+
     pub unsafe fn write(&self, ptr: *mut u8) -> *mut Self {
         let ptr = ptr.cast::<Self>();
         *ptr = *self;
@@ -58,10 +71,10 @@ impl AlloqMetaData {
         let next = self.next;
         let back = self.back;
         if !self.back.is_null() {
-            unsafe { *back }.next = next;
+            unsafe { (*back).next = next };
         }
         if !self.next.is_null() {
-            unsafe { *next }.back = back;
+            unsafe { (*next).back = back };
         }
         self.next = ptr::null_mut();
         self.back = ptr::null_mut();
@@ -105,16 +118,26 @@ pub trait AllocMethod {
         layout: Layout,
     ) -> *mut AlloqMetaData;
     fn remove(
-        first_and_end: (&mut AlloqMetaData, &mut AlloqMetaData),
+        first_and_end: &mut (*mut AlloqMetaData, *mut AlloqMetaData),
         ptr: *mut u8,
         layout: Layout,
     ) {
-        let end = unsafe { ptr.offset(layout.size() as isize) };
-        let node = first_and_end
-            .0
-            .iter()
-            .find(|&n| unsafe { *n }.end == end)
-            .expect("use after free");
+        let ptr_end = unsafe { ptr.offset(layout.size() as isize) };
+        unsafe {
+            if first_and_end.1.as_ref().unwrap().end == ptr_end {
+                first_and_end.1 = first_and_end.1.as_ref().unwrap().back;
+                return;
+            }
+        }
+        let node = unsafe {
+            first_and_end
+                .0
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|&n| (*n).end == ptr_end)
+        }
+        .expect("use after free");
         unsafe { *node.cast_mut() }.disconnect();
     }
 }
@@ -154,25 +177,24 @@ impl AllocMethod for BestFit {
     ) -> *mut AlloqMetaData {
         let mut best = ptr::null_mut();
         let mut dispersion = usize::MAX;
-        let mut align = ptr::null();
         for node_ptr in first.iter() {
+            std::println!("on {node_ptr:?}");
             let node = unsafe { *node_ptr };
             let obj_end = AlloqMetaData::end_of_allocation(node.end as *mut u8, layout);
             if obj_end <= node.next.cast() {
                 let disp = unsafe { (node.next.cast::<u8>()).offset_from(obj_end) } as usize;
-                // Get dispersion from `back` also
+                // TODO: Get dispersion from `back` also
                 if disp < dispersion {
                     best = node_ptr as *mut AlloqMetaData;
-                    align = crate::align_up(node_ptr as usize, mem::align_of::<AlloqMetaData>())
-                        as *const u8;
                     dispersion = disp;
                 }
             }
         }
         if best.is_null() {
+            std::println!("it's null");
             end
         } else {
-            assert!(!align.is_null(), "extern modification");
+            std::println!("could be allocated");
             best
         }
     }
@@ -193,34 +215,19 @@ unsafe impl<A: AllocMethod> Allocator for Alloq<A> {
         layout: core::alloc::Layout,
     ) -> Result<core::ptr::NonNull<[u8]>, core::alloc::AllocError> {
         let mut lock = self.first.lock();
-        let ptr = if lock.0.is_null() {
-            let meta = unsafe {
-                AlloqMetaData::allocate(ptr::null_mut::<AlloqMetaData>(), self.heap_range(), layout)
-            };
-            unsafe {
-                lock.0 = meta.1;
-                lock.1 = meta.1;
-                meta.0.end.offset(-(layout.size() as isize))
-            }
-        } else {
-            unsafe {
-                let back = A::fit((&mut *lock.0, &mut *lock.1), layout);
-                let meta = AlloqMetaData::allocate(back, self.heap_range(), layout);
-                lock.1 = meta.1;
-                meta.0.end.offset(-(layout.size() as isize))
-            }
+        let ptr = unsafe {
+            let back = A::fit((lock.0.as_mut().unwrap(), lock.1.as_mut().unwrap()), layout);
+            let meta = AlloqMetaData::allocate(back, self.heap_range(), layout);
+            lock.1 = meta.1;
+            meta.0.end.offset(-(layout.size() as isize))
         };
         let slice = unsafe { slice::from_raw_parts_mut(ptr.cast_mut(), layout.size()) };
         NonNull::new(slice).ok_or(AllocError)
     }
 
     unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: core::alloc::Layout) {
-        let lock = self.first.lock();
-        A::remove(
-            (lock.0.as_mut().unwrap(), lock.1.as_mut().unwrap()),
-            ptr.as_ptr(),
-            layout,
-        );
+        let mut lock = self.first.lock();
+        A::remove(&mut (lock.0, lock.1), ptr.as_ptr(), layout);
     }
 }
 
@@ -231,23 +238,32 @@ impl<A: AllocMethod> Alloqator for Alloq<A> {
     where
         Self: Sized,
     {
-        Self {
+        std::println!("heap range: {heap_range:?}");
+        let offset = unsafe {
+            AlloqMetaData::allocate(ptr::null_mut(), heap_range.clone(), Layout::new::<u8>())
+        };
+        let s = Self {
             heap_start: heap_range.start,
             heap_end: heap_range.end,
-            first: (ptr::null_mut(), ptr::null_mut()).into(),
+            first: (offset.1, offset.1).into(),
             _marker: PhantomData,
-        }
+        };
+        s
     }
 
-    fn reset(&self) {
+    unsafe fn reset(&self) {
         let mut lock = self.first.lock();
-        lock.0 = ptr::null_mut();
-        lock.1 = ptr::null_mut();
+        let offset = unsafe {
+            AlloqMetaData::allocate(ptr::null_mut(), self.heap_range(), Layout::new::<u8>())
+        };
+        lock.0 = offset.1;
+        lock.1 = offset.1;
     }
 
     fn heap_start(&self) -> *const u8 {
         self.heap_start
     }
+
     fn heap_end(&self) -> *const u8 {
         self.heap_end
     }

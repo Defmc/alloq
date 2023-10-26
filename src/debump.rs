@@ -124,7 +124,7 @@ impl Alloqator for Alloq {
     }
 
     #[inline(always)]
-    fn reset(&self) {
+    unsafe fn reset(&self) {
         let mut lock = self.iter.lock();
         lock.0 = 0;
         lock.1 = self.heap_start() as *mut u8;
