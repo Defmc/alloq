@@ -9,8 +9,6 @@ use core::{
 
 use crate::Alloqator;
 
-extern crate std;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AlloqMetaData {
     pub end: *const u8,
@@ -47,7 +45,7 @@ impl AlloqMetaData {
         };
         assert!(
             aligned_val.offset(layout.size() as isize).cast_const() <= range_end,
-            "no available memory"
+            "no available memory, end is {range_end:?}"
         );
         let s_ptr = s.write(aligned_meta);
         if !list.is_null() {
@@ -178,7 +176,6 @@ impl AllocMethod for BestFit {
         let mut best = ptr::null_mut();
         let mut dispersion = usize::MAX;
         for node_ptr in first.iter() {
-            std::println!("on {node_ptr:?}");
             let node = unsafe { *node_ptr };
             let obj_end = AlloqMetaData::end_of_allocation(node.end as *mut u8, layout);
             if obj_end <= node.next.cast() {
@@ -191,10 +188,8 @@ impl AllocMethod for BestFit {
             }
         }
         if best.is_null() {
-            std::println!("it's null");
-            end
+            end as *mut AlloqMetaData
         } else {
-            std::println!("could be allocated");
             best
         }
     }
@@ -240,7 +235,6 @@ impl<A: AllocMethod> Alloqator for Alloq<A> {
     where
         Self: Sized,
     {
-        std::println!("heap range: {heap_range:?}");
         let offset = unsafe {
             AlloqMetaData::allocate(ptr::null_mut(), heap_range.clone(), Layout::new::<u8>())
         };
