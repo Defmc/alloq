@@ -14,9 +14,9 @@ do for [source in sources] {
     plot source using 1:2 title "first" with lines linewidth 3, \
          source using 1:3 title "best" with lines linewidth 3, \
          source using 1:4 title "dump" with lines linewidth 3, \
-         source using 1:4 title "dedump" with lines linewidth 3, \
-         source using 1:4 title "pool" with lines linewidth 3, \
-         source using 1:4 title "statiq" with lines linewidth 3
+         source using 1:5 title "dedump" with lines linewidth 3, \
+         source using 1:6 title "pool" with lines linewidth 3, \
+         source using 1:7 title "statiq" with lines linewidth 3
 }
 
 unset multiplot
