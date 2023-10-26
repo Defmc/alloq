@@ -23,11 +23,6 @@ fn get_time(f: impl FnOnce()) -> Duration {
     Instant::now() - start
 }
 
-fn test_and_clear(a: &impl Alloqator, f: impl FnOnce()) -> Duration {
-    let time = get_time(f);
-    time
-}
-
 macro_rules! unit_bench {
     ($dir:expr, $name:expr, $($alloq:expr),*) => {{
         let file = File::create(format!("{}/{}.csv", $dir, stringify!($name))).unwrap();
@@ -87,7 +82,7 @@ fn linear_allocation<A: Alloqator>(a: &A, n: usize) -> Duration {
     unsafe { a.reset() };
     let layout = Layout::from_size_align(32, 2).unwrap();
     let mut v = Vec::with_capacity(n);
-    let t = test_and_clear(a, || {
+    let t = get_time(|| {
         for _x in 0..n {
             v.push(a.alloq(layout));
         }
@@ -104,7 +99,7 @@ fn linear_deallocation<A: Alloqator>(a: &A, n: usize) -> Duration {
     unsafe { a.reset() };
     let layout = Layout::from_size_align(32, 2).unwrap();
     let ptrs: Vec<_> = (0..n).map(|_| a.alloq(layout)).collect();
-    test_and_clear(a, || {
+    get_time(|| {
         for ptr in ptrs {
             unsafe { a.dealloq(ptr.clone(), layout) };
         }
@@ -115,7 +110,7 @@ fn reverse_deallocation<A: Alloqator>(a: &A, n: usize) -> Duration {
     unsafe { a.reset() };
     let layout = Layout::from_size_align(32, 2).unwrap();
     let ptrs: Vec<_> = (0..n).map(|_| a.alloq(layout)).collect();
-    test_and_clear(a, || {
+    get_time(|| {
         for ptr in ptrs.iter().rev() {
             unsafe { a.dealloq(ptr.clone(), layout) };
         }
@@ -125,7 +120,7 @@ fn reverse_deallocation<A: Alloqator>(a: &A, n: usize) -> Duration {
 fn vector_pushing<A: Alloqator>(a: &A, n: usize) -> Duration {
     unsafe { a.reset() };
     let mut v = Vec::new_in(a);
-    let t = test_and_clear(a, || {
+    let t = get_time(|| {
         for x in 0..n {
             v.push(x);
         }
@@ -141,7 +136,7 @@ fn vector_pushing<A: Alloqator>(a: &A, n: usize) -> Duration {
 
 fn reset<A: Alloqator>(a: &A, _n: usize) -> Duration {
     unsafe { a.reset() };
-    test_and_clear(a, || unsafe { a.reset() })
+    get_time(|| unsafe { a.reset() })
 }
 
 fn vector_fragmentation<A: Alloqator>(a: &A, n: usize) -> Duration {
@@ -149,7 +144,7 @@ fn vector_fragmentation<A: Alloqator>(a: &A, n: usize) -> Duration {
     let mut v1 = Vec::new_in(a);
     let mut v2 = Vec::new_in(a);
     let mut v3 = Vec::new_in(a);
-    let t = test_and_clear(a, || {
+    let t = get_time(|| {
         for x in 0..(n as isize) {
             if x % 2 == 0 {
                 v1.push(x);
