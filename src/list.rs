@@ -218,7 +218,9 @@ unsafe impl<A: AllocMethod> Allocator for Alloq<A> {
         let ptr = unsafe {
             let back = A::fit((lock.0.as_mut().unwrap(), lock.1.as_mut().unwrap()), layout);
             let meta = AlloqMetaData::allocate(back, self.heap_range(), layout);
-            lock.1 = meta.1;
+            if meta.1 > lock.1 {
+                lock.1 = meta.1;
+            }
             meta.0.end.offset(-(layout.size() as isize))
         };
         let slice = unsafe { slice::from_raw_parts_mut(ptr.cast_mut(), layout.size()) };
