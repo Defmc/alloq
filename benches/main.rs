@@ -24,7 +24,6 @@ fn get_time(f: impl FnOnce()) -> Duration {
 }
 
 fn test_and_clear(a: &impl Alloqator, f: impl FnOnce()) -> Duration {
-    unsafe { a.reset() };
     let time = get_time(f);
     time
 }
@@ -41,6 +40,7 @@ macro_rules! unit_bench {
         for n in (0..=TEST_COUNT).step_by(10) {
             write!(w, "{n}, ").unwrap();
             $(
+                std::println!("testing on {}...", stringify!($alloq));
                 let t = $name($alloq, n);
                 write!(w, "{}, ", t.as_nanos()).unwrap();
             )*
@@ -85,6 +85,7 @@ fn main() {
 }
 
 fn linear_allocation<A: Alloqator>(a: &A, n: usize) -> Duration {
+    unsafe { a.reset() };
     let layout = Layout::from_size_align(32, 2).unwrap();
     let mut v = Vec::with_capacity(n);
     let t = test_and_clear(a, || {
@@ -101,6 +102,7 @@ fn linear_allocation<A: Alloqator>(a: &A, n: usize) -> Duration {
 }
 
 fn linear_deallocation<A: Alloqator>(a: &A, n: usize) -> Duration {
+    unsafe { a.reset() };
     let layout = Layout::from_size_align(32, 2).unwrap();
     let ptrs: Vec<_> = (0..n).map(|_| a.alloq(layout)).collect();
     test_and_clear(a, || {
@@ -111,6 +113,7 @@ fn linear_deallocation<A: Alloqator>(a: &A, n: usize) -> Duration {
 }
 
 fn reverse_deallocation<A: Alloqator>(a: &A, n: usize) -> Duration {
+    unsafe { a.reset() };
     let layout = Layout::from_size_align(32, 2).unwrap();
     let ptrs: Vec<_> = (0..n).map(|_| a.alloq(layout)).collect();
     test_and_clear(a, || {
@@ -121,6 +124,7 @@ fn reverse_deallocation<A: Alloqator>(a: &A, n: usize) -> Duration {
 }
 
 fn vector_pushing<A: Alloqator>(a: &A, n: usize) -> Duration {
+    unsafe { a.reset() };
     let mut v = Vec::new_in(a);
     let t = test_and_clear(a, || {
         for x in 0..n {
@@ -137,10 +141,12 @@ fn vector_pushing<A: Alloqator>(a: &A, n: usize) -> Duration {
 }
 
 fn reset<A: Alloqator>(a: &A, _n: usize) -> Duration {
+    unsafe { a.reset() };
     test_and_clear(a, || unsafe { a.reset() })
 }
 
 fn vector_fragmentation<A: Alloqator>(a: &A, n: usize) -> Duration {
+    unsafe { a.reset() };
     let mut v1 = Vec::new_in(a);
     let mut v2 = Vec::new_in(a);
     let mut v3 = Vec::new_in(a);
