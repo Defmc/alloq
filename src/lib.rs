@@ -8,8 +8,6 @@ use core::{
     ptr::NonNull,
 };
 
-pub mod list;
-
 //#[cfg(feature = "bump")]
 pub mod bump;
 
@@ -18,6 +16,9 @@ pub mod debump;
 
 //#[cfg(feature = "pool")]
 pub mod pool;
+
+//#[cfg(feature = "list")]
+pub mod list;
 
 //#[cfg(feature = "static")]
 pub mod statiq;
