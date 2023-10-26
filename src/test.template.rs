@@ -187,3 +187,27 @@ fn vector_fragmented() {
         -v3.iter().sum::<isize>()
     )
 }
+
+#[test]
+fn trash_heap() {
+    let heap_stackish: [u8; 1024] = core::array::from_fn(|x| (x % 255) as u8);
+    let alloqer = Alloq::new(heap_stackish.as_ptr_range());
+    let mut v = Vec::new_in(&alloqer);
+    for x in 0..10 {
+        v.push(x);
+    }
+    assert_eq!(v.iter().sum::<i32>(), 45i32);
+}
+
+#[test]
+fn corrupted_heap() {
+    let mut heap_stackish: [u8; 1024] = [0; 1024];
+    let alloqer = Alloq::new(heap_stackish.as_ptr_range());
+    heap_stackish.fill(0);
+    unsafe { alloqer.reset() };
+    let mut v = Vec::new_in(&alloqer);
+    for x in 0..10 {
+        v.push(x);
+    }
+    assert_eq!(v.iter().sum::<i32>(), 45i32);
+}
