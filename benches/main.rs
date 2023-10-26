@@ -13,7 +13,7 @@ use std::{
 
 use alloq::{bump, debump, list::best, list::first, pool, statiq, Alloqator};
 
-pub const HEAP_SIM_SIZE: usize = 1024 * 1024 * 1024;
+pub const HEAP_SIM_SIZE: usize = 1024 * 1024 * 512;
 pub static mut HEAP_SIM: [u8; HEAP_SIM_SIZE] = [0u8; HEAP_SIM_SIZE];
 pub const TEST_COUNT: usize = 10_usize.pow(3);
 
