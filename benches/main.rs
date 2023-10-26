@@ -32,7 +32,7 @@ macro_rules! unit_bench {
         $(write!(w, "{}, ", std::any::type_name_of_val($alloq)).unwrap();)*
         writeln!(w, "").unwrap();
         println!("benchmarking {}", stringify!($name));
-        for n in (0..=TEST_COUNT).step_by(10) {
+        for n in (0..=TEST_COUNT) {
             write!(w, "{n}, ").unwrap();
             $(
                 let t = $name($alloq, n);
