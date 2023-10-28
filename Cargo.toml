@@ -7,6 +7,12 @@ edition = "2021"
 
 [features]
 default = []
+bump = []
+debump = []
+pool = []
+list = []
+statiq = []
+system = []
 
 [dependencies]
 spin = "0.9.8"

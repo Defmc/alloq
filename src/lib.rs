@@ -14,22 +14,22 @@ use core::{
     ptr::NonNull,
 };
 
-//#[cfg(feature = "bump")]
+#[cfg(feature = "bump")]
 pub mod bump;
 
-//#[cfg(feature = "debump")]
+#[cfg(feature = "debump")]
 pub mod debump;
 
-//#[cfg(feature = "pool")]
+#[cfg(feature = "pool")]
 pub mod pool;
 
-//#[cfg(feature = "list")]
+#[cfg(feature = "list")]
 pub mod list;
 
-//#[cfg(feature = "static")]
+#[cfg(feature = "statiq")]
 pub mod statiq;
 
-//#[cfg(feature = "system")]
+#[cfg(feature = "system")]
 pub mod system;
 
 pub const fn align_up(addr: usize, align: usize) -> usize {
