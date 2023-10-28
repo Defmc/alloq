@@ -65,14 +65,15 @@ fn main() {
 
     println!("preparing alloqators");
 
-    let bump = bump::Alloq::new(unsafe { HEAP_SIM.as_ptr_range() });
-    let debump = debump::Alloq::new(unsafe { HEAP_SIM.as_ptr_range() });
-    let pool =
-        unsafe { pool::Alloq::with_chunk_size(HEAP_SIM.as_ptr_range(), HEAP_SIM_SIZE / 1024, 2) };
-    let first = first::Alloq::new(unsafe { HEAP_SIM.as_ptr_range() });
-    let best = best::Alloq::new(unsafe { HEAP_SIM.as_ptr_range() });
-    let statiq = statiq::Alloq::new(unsafe { HEAP_SIM.as_ptr_range() });
-    let system = system::Alloq::new(unsafe { HEAP_SIM.as_ptr_range() });
+    let bump = bump::Alloq::new(unsafe { HEAP_SIM.as_mut_ptr_range() });
+    let debump = debump::Alloq::new(unsafe { HEAP_SIM.as_mut_ptr_range() });
+    let pool = unsafe {
+        pool::Alloq::with_chunk_size(HEAP_SIM.as_mut_ptr_range(), HEAP_SIM_SIZE / 1024, 2)
+    };
+    let first = first::Alloq::new(unsafe { HEAP_SIM.as_mut_ptr_range() });
+    let best = best::Alloq::new(unsafe { HEAP_SIM.as_mut_ptr_range() });
+    let statiq = statiq::Alloq::new(unsafe { HEAP_SIM.as_mut_ptr_range() });
+    let system = system::Alloq::new(unsafe { HEAP_SIM.as_mut_ptr_range() });
 
     println!("running benchmarks");
     run_benches!(dir, &first, &best, &bump, &debump, &pool, &statiq, &system);
