@@ -24,30 +24,35 @@ impl AlloqMetaData {
         }
     }
 
+    /// # Safety
     pub unsafe fn write_meta(
         &self,
         obj_start: *mut u8,
         end: *const u8,
     ) -> (*mut u8, *const AlloqMetaData) {
-        let ptr_to_write = end.offset(-(mem::size_of::<Self>() as isize)) as *mut AlloqMetaData;
+        let ptr_to_write = end.sub(mem::size_of::<Self>()) as *mut AlloqMetaData;
         *ptr_to_write = *self;
         (obj_start, ptr_to_write)
     }
 
+    /// # Safety
+    /// `ptr` must be valid and previous allocated.
     pub unsafe fn previous_alloc<'a>(ptr: *const u8) -> &'a mut Self {
-        let ptr = ptr.offset(-(mem::size_of::<Self>() as isize));
+        let ptr = ptr.sub(mem::size_of::<Self>());
         &mut *(ptr as *mut AlloqMetaData)
     }
 
+    /// # Safety
+    /// `ptr` must be valid and previous allocated.
     pub unsafe fn from_alloc_ptr<'a>(ptr: *const u8, layout: Layout) -> &'a mut Self {
-        let end = ptr.offset(layout.size() as isize);
+        let end = ptr.add(layout.size());
         let start_meta = crate::align_up(end as usize, mem::align_of::<AlloqMetaData>()) as *mut u8;
         &mut *(start_meta as *mut Self)
     }
 
-    pub unsafe fn after(&self) -> *const u8 {
+    pub fn after(&self) -> *const u8 {
         let ptr = (self as *const AlloqMetaData) as *const u8;
-        ptr.offset(mem::size_of::<AlloqMetaData>() as isize)
+        unsafe { ptr.add(mem::size_of::<AlloqMetaData>()) }
     }
 }
 /// A Deallocation-able Bump allocator. Works like `crate::bump::Alloq`, but has several mechanisms
@@ -70,10 +75,10 @@ unsafe impl Allocator for Alloq {
         let mut lock = self.iter.lock();
         let block_start = lock.1;
         let start = crate::align_up(lock.1 as usize, layout.align()) as *mut u8;
-        let end = unsafe { start.offset(layout.size() as isize) };
+        let end = unsafe { start.add(layout.size()) };
         let start_meta = crate::align_up(end as usize, mem::align_of::<AlloqMetaData>()) as *mut u8;
-        let end_meta = unsafe { start_meta.offset(mem::size_of::<AlloqMetaData>() as isize) };
-        if end_meta > self.heap_end as *mut u8 {
+        let end_meta = unsafe { start_meta.add(mem::size_of::<AlloqMetaData>()) };
+        if end_meta > self.heap_end {
             panic!("no available memory")
         }
         lock.1 = end_meta;
@@ -92,14 +97,14 @@ unsafe impl Allocator for Alloq {
         let mut lock = *self.iter.lock();
         lock.0 -= 1;
         if lock.0 == 0 {
-            lock.1 = self.heap_start as *mut u8;
+            lock.1 = self.heap_start;
             return;
         }
         let mut meta = AlloqMetaData::from_alloc_ptr(ptr.as_ptr(), layout);
         meta.used = false;
         if meta.after() == lock.1 {
             while !meta.used {
-                lock.1 = meta.start as *mut u8;
+                lock.1 = meta.start;
                 if meta.last_meta.is_null() {
                     return;
                 }

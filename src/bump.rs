@@ -21,7 +21,7 @@ unsafe impl Allocator for Alloq {
     fn allocate(&self, layout: core::alloc::Layout) -> Result<NonNull<[u8]>, AllocError> {
         let mut lock = self.iter.lock();
         let start = crate::align_up(lock.1 as usize, layout.align()) as *mut u8;
-        let end = unsafe { start.offset(layout.size() as isize) };
+        let end = unsafe { start.add(layout.size()) };
         if end > self.heap_end {
             panic!("no available memory")
         }
@@ -36,8 +36,7 @@ unsafe impl Allocator for Alloq {
         let mut lock = *self.iter.lock();
         lock.0 -= 1;
         if lock.0 == 0 {
-            lock.1 = self.heap_start as *mut u8;
-            return;
+            lock.1 = self.heap_start;
         }
     }
 }

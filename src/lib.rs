@@ -1,6 +1,12 @@
 #![feature(allocator_api)]
 #![no_std]
-
+// #![warn(
+//     clippy::all,
+//     clippy::restriction,
+//     clippy::pedantic,
+//     clippy::nursery,
+//     clippy::cargo
+// )]
 use core::{
     alloc::{Allocator, Layout},
     mem,
@@ -50,26 +56,29 @@ pub const fn align_down(addr: usize, align: usize) -> usize {
 pub trait Alloqator: Allocator {
     type Metadata;
 
-    fn new(heap_range: Range<*const u8>) -> Self
+    fn new(heap_range: Range<*mut u8>) -> Self
     where
         Self: Sized;
 
-    /// Resets the allocator, allowing it to allocate in the entire heap again. You should garantee
-    /// there is no current allocation. `Alloqator::reset` must be able to handle memory
-    /// corruptions.
+    /// Resets the allocator.
+    /// # Safety
+    /// Can corrupt previous allocation it they was not deallocated. Make sure to deallocate
+    /// everything before call it.
     unsafe fn reset(&self);
 
-    /// Resets the allocator and the heap. Cross-using more than one allocator can result in memory
-    /// corruption, like `crate::pool` and `crate::list`, where the first uses the heap start for
-    /// the values, while the second, as metadata
+    /// Resets the allocator and the heap, setting all bytes to zero.
+    /// # Safety
+    /// Can corrupt previous allocation it they was not deallocated. Make sure to deallocate
+    /// everything before call it.
     unsafe fn hard_reset(&self) {
         let len = self.heap_end().offset_from(self.heap_start()) as usize;
-        core::slice::from_raw_parts_mut(self.heap_start().cast_mut(), len).fill(0);
+        core::slice::from_raw_parts_mut(self.heap_start(), len).fill(0);
+        self.reset();
     }
 
-    fn heap_start(&self) -> *const u8;
-    fn heap_end(&self) -> *const u8;
-    fn heap_range(&self) -> Range<*const u8> {
+    fn heap_start(&self) -> *mut u8;
+    fn heap_end(&self) -> *mut u8;
+    fn heap_range(&self) -> Range<*mut u8> {
         self.heap_start()..self.heap_end()
     }
 
@@ -77,6 +86,9 @@ pub trait Alloqator: Allocator {
         unsafe { (*self.allocate(layout).unwrap().as_ptr()).as_ptr() as *mut u8 }
     }
 
+    /// # Safety
+    /// It should just be called ONCE per allocation. Some allocators like `crate::list` and
+    /// `crate::system` can handle it and panic, others will silently start to cause UB.
     unsafe fn dealloq(&self, ptr: *mut u8, layout: Layout) {
         self.deallocate(NonNull::new(ptr).unwrap(), layout);
     }

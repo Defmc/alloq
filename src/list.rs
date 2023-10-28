@@ -17,6 +17,8 @@ pub struct AlloqMetaData {
 }
 
 impl AlloqMetaData {
+    /// # Safety
+    /// `range` must be a valid heap block.
     pub unsafe fn allocate(
         list: *mut Self,
         range: Range<*mut u8>,
@@ -35,16 +37,16 @@ impl AlloqMetaData {
         let aligned_meta =
             crate::align_up(range_start as usize, mem::align_of::<Self>()) as *mut u8;
         let aligned_val = crate::align_up(
-            aligned_meta.offset(mem::size_of::<Self>() as isize) as usize,
+            aligned_meta.add(mem::size_of::<Self>()) as usize,
             layout.align(),
         ) as *mut u8;
         let s = Self {
-            end: aligned_val.offset(layout.size() as isize),
+            end: aligned_val.add(layout.size()),
             next: ptr::null_mut(),
             back: list,
         };
         assert!(
-            aligned_val.offset(layout.size() as isize).cast_const() <= range_end,
+            aligned_val.add(layout.size()).cast_const() <= range_end,
             "no available memory, end is {range_end:?}"
         );
         let s_ptr = s.write(aligned_meta);
@@ -59,6 +61,8 @@ impl AlloqMetaData {
         (s, s_ptr)
     }
 
+    /// # Safety
+    /// `ptr` must be at least of size of `Self`.
     pub unsafe fn write(&self, ptr: *mut u8) -> *mut Self {
         let ptr = ptr.cast::<Self>();
         *ptr = *self;
@@ -78,7 +82,7 @@ impl AlloqMetaData {
         self.back = ptr::null_mut();
     }
 
-    pub unsafe fn connect_unchecked(back: &mut Self, next: &mut Self) {
+    pub fn connect_unchecked(back: &mut Self, next: &mut Self) {
         back.next = next as *mut Self;
         next.back = back as *mut Self;
     }
@@ -111,16 +115,17 @@ impl Iterator for AlloqMetaDataIter {
 
 pub trait AllocMethod {
     // TODO: Allocate before first
-    fn fit(
-        first_and_end: (&mut AlloqMetaData, &mut AlloqMetaData),
-        layout: Layout,
-    ) -> *mut AlloqMetaData;
-    fn remove(
+    fn fit(first_and_end: (&AlloqMetaData, &AlloqMetaData), layout: Layout)
+        -> *const AlloqMetaData;
+    /// # Safety
+    /// `first_and_end` should receive valid references, the first to the start of list, and the
+    /// last for the end.
+    unsafe fn remove(
         first_and_end: &mut (*mut AlloqMetaData, *mut AlloqMetaData),
         ptr: *mut u8,
         layout: Layout,
     ) {
-        let ptr_end = unsafe { ptr.offset(layout.size() as isize) };
+        let ptr_end = unsafe { ptr.add(layout.size()) };
         unsafe {
             if first_and_end.1.as_ref().unwrap().end == ptr_end {
                 first_and_end.1 = first_and_end.1.as_ref().unwrap().back;
@@ -142,17 +147,12 @@ pub trait AllocMethod {
 
 pub struct FirstFit;
 impl AllocMethod for FirstFit {
-    fn fit(
-        (first, _): (&mut AlloqMetaData, &mut AlloqMetaData),
-        layout: Layout,
-    ) -> *mut AlloqMetaData {
+    fn fit((first, _): (&AlloqMetaData, &AlloqMetaData), layout: Layout) -> *const AlloqMetaData {
         for node_ptr in first.iter() {
             let node = unsafe { *node_ptr };
             let obj_end = AlloqMetaData::end_of_allocation(node.end.cast_mut(), layout);
-            if node.next.is_null() {
+            if node.next.is_null() || obj_end <= node.next.cast() {
                 // TODO: Check if don't overflow heap
-                return node_ptr.cast_mut();
-            } else if obj_end <= node.next.cast() {
                 return node_ptr.cast_mut();
             }
         }
@@ -169,10 +169,7 @@ impl AllocMethod for FirstFit {
 
 pub struct BestFit;
 impl AllocMethod for BestFit {
-    fn fit(
-        (first, end): (&mut AlloqMetaData, &mut AlloqMetaData),
-        layout: Layout,
-    ) -> *mut AlloqMetaData {
+    fn fit((first, end): (&AlloqMetaData, &AlloqMetaData), layout: Layout) -> *const AlloqMetaData {
         let mut best = ptr::null_mut();
         let mut dispersion = usize::MAX;
         for node_ptr in first.iter() {
@@ -188,7 +185,7 @@ impl AllocMethod for BestFit {
             }
         }
         if best.is_null() {
-            end as *mut AlloqMetaData
+            end as *const AlloqMetaData
         } else {
             best
         }
@@ -213,7 +210,7 @@ unsafe impl<A: AllocMethod> Allocator for Alloq<A> {
         let mut lock = self.first.lock();
         let ptr = unsafe {
             let back = A::fit((lock.0.as_mut().unwrap(), lock.1.as_mut().unwrap()), layout);
-            let meta = AlloqMetaData::allocate(back, self.heap_range(), layout);
+            let meta = AlloqMetaData::allocate(back.cast_mut(), self.heap_range(), layout);
             if meta.1 > lock.1 {
                 lock.1 = meta.1;
             }
@@ -242,13 +239,12 @@ impl<A: AllocMethod> Alloqator for Alloq<A> {
         let offset = unsafe {
             AlloqMetaData::allocate(ptr::null_mut(), heap_range.clone(), Layout::new::<u8>())
         };
-        let s = Self {
+        Self {
             heap_start: heap_range.start,
             heap_end: heap_range.end,
             first: (offset.1, offset.1).into(),
             _marker: PhantomData,
-        };
-        s
+        }
     }
 
     unsafe fn reset(&self) {

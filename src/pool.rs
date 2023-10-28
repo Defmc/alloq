@@ -20,6 +20,8 @@ pub struct RawChunk {
 }
 
 impl RawChunk {
+    /// # Safety
+    /// `bind` must refer to a valid chunk.
     pub unsafe fn new(bind: *const u8, align: usize) -> Self {
         Self {
             addr: crate::align_up(bind as usize, align) as *mut u8,
@@ -29,11 +31,13 @@ impl RawChunk {
         }
     }
 
-    pub unsafe fn allocate<'a>(&self, end: &mut *mut RawChunk, chunk_size: usize) -> *mut Self {
-        let ptr = end.offset(-1);
+    /// # Safety
+    /// `end` must be a valid raw chunk and previous allocated.
+    pub unsafe fn allocate(&self, end: &mut *mut RawChunk, chunk_size: usize) -> *mut Self {
+        let ptr = end.sub(1);
         let aligned = crate::align_down(ptr as usize, mem::align_of::<Self>()) as *mut Self;
         assert!(
-            self.chunk.offset(chunk_size as isize) < aligned.cast(),
+            self.chunk.add(chunk_size) < aligned.cast(),
             "too low memory: can't allocate a chunk ({} bytes in {:?}) and metadata ({} bytes in {:?})",
             chunk_size, self.chunk, mem::size_of::<Self>(), aligned
         );
@@ -58,52 +62,60 @@ impl RawChunk {
         self
     }
 
-    pub unsafe fn alloc_next<'a>(
+    pub fn alloc_next(
         &mut self,
         list_end: &mut *mut RawChunk,
         chunk_size: usize,
         align: usize,
     ) -> *mut Self {
         let last_alloc = *list_end;
-        let addr = (*last_alloc).chunk.offset(chunk_size as isize);
-        let next = Self::new(addr, align /* already aligned*/).allocate(list_end, chunk_size);
-        Self::connect_unchecked(self, &mut *next);
-        next
+        unsafe {
+            let addr = (*last_alloc).chunk.add(chunk_size);
+            let next = Self::new(addr, align /* already aligned*/).allocate(list_end, chunk_size);
+            Self::connect_unchecked(self, &mut *next);
+            next
+        }
     }
 
     #[inline(always)]
-    pub unsafe fn disconnect(&mut self) {
+    pub fn disconnect(&mut self) {
         let next = self.next;
         let back = self.back;
         if !self.back.is_null() {
-            (*back).next = next;
+            unsafe {
+                (*back).next = next;
+            }
         }
         if !self.next.is_null() {
-            (*next).back = back;
+            unsafe {
+                (*next).back = back;
+            }
         }
         self.next = null_mut();
         self.back = null_mut();
     }
 
     #[inline(always)]
-    pub unsafe fn insert_in_list(&mut self, back: &mut RawChunk) {
+    pub fn insert_in_list(&mut self, back: &mut RawChunk) {
         self.disconnect();
         let next = back.next;
         Self::connect_unchecked(back, self);
         if !next.is_null() {
-            Self::connect_unchecked(self, &mut *next);
+            unsafe {
+                Self::connect_unchecked(self, &mut *next);
+            }
         }
     }
 
     #[inline(always)]
-    pub unsafe fn connect(back: &mut Self, next: &mut Self) {
+    pub fn connect(back: &mut Self, next: &mut Self) {
         assert!(back.next.is_null());
         assert!(next.back.is_null());
         Self::connect_unchecked(back, next);
     }
 
     #[inline(always)]
-    pub unsafe fn connect_unchecked(back: &mut Self, next: &mut Self) {
+    pub fn connect_unchecked(back: &mut Self, next: &mut Self) {
         back.next = next as *mut Self;
         next.back = back as *mut Self;
     }
@@ -169,6 +181,8 @@ pub struct Pool {
 }
 
 impl Pool {
+    /// # Safety
+    /// `raw_chunk` must be a valid and previous allocated raw chunk.
     pub unsafe fn push_used(&mut self, raw_chunk: *mut RawChunk) {
         if self.used_head.is_null() {
             self.used_head = raw_chunk;
@@ -183,17 +197,19 @@ impl Pool {
         }
     }
 
-    pub unsafe fn get_free_chunk(&mut self, chunk_size: usize, align: usize) -> *mut RawChunk {
-        let last = &mut *self.free_last;
+    pub fn get_free_chunk(&mut self, chunk_size: usize, align: usize) -> *mut RawChunk {
+        let last = unsafe { &mut *self.free_last };
         let freed = if last.back.is_null() {
-            &mut *last.alloc_next(&mut self.list_end, chunk_size, align)
+            unsafe { &mut *last.alloc_next(&mut self.list_end, chunk_size, align) }
         } else {
-            &mut *last.back
+            unsafe { &mut *last.back }
         };
         freed.disconnect();
         freed
     }
 
+    /// # Safety
+    /// `ptr` must be previous returned by `Alloq::allocate`.
     pub unsafe fn remove_used(&mut self, raw_chunk_ptr: *mut RawChunk) {
         let last_free = &mut *self.free_last;
         let raw_chunk = &mut *raw_chunk_ptr;
@@ -209,6 +225,8 @@ impl Pool {
 }
 
 impl Alloq {
+    /// # Safety
+    /// `heap_range` must be a valid heap block.
     pub unsafe fn with_chunk_size(
         heap_range: Range<*mut u8>,
         chunk_size: usize,
@@ -232,7 +250,9 @@ impl Alloq {
         }
     }
 
-    /// Return the `RawChunk` that stores that chunk
+    /// Return the `RawChunk` that stores that chunk.
+    /// # Safety
+    /// `ptr` must be previous returned by `Alloq::allocate`.
     pub unsafe fn get_raw_chunk_from(
         &self,
         ptr: *const u8,
@@ -243,9 +263,8 @@ impl Alloq {
         let first_chunk = crate::align_up(self.heap_start() as usize, self.align);
         let chunk_idx = (chunk - first_chunk) / self.chunk_size;
         let first_raw = crate::align_down(
-            self.heap_end()
-                .offset(-(mem::size_of::<RawChunk>() as isize)) as usize,
-            mem::align_of::<RawChunk>() as usize,
+            self.heap_end().sub(mem::size_of::<RawChunk>()) as usize,
+            mem::align_of::<RawChunk>(),
         ) as *const RawChunk;
         // FIXME: Is size always multiple of alignment?
         let raw = first_raw.offset(-(chunk_idx as isize));
@@ -264,11 +283,10 @@ unsafe impl Allocator for Alloq {
     fn allocate(&self, layout: core::alloc::Layout) -> Result<NonNull<[u8]>, AllocError> {
         let chunk = {
             let mut pooler = self.pooler.lock();
-            let chunk = unsafe { pooler.get_free_chunk(self.chunk_size, layout.align()) };
+            let chunk = pooler.get_free_chunk(self.chunk_size, layout.align());
             unsafe { pooler.push_used(chunk) };
             if unsafe {
-                (*chunk).addr.offset(layout.size() as isize)
-                    > (*chunk).chunk.offset(self.chunk_size as isize).cast_mut()
+                (*chunk).addr.add(layout.size()) > (*chunk).chunk.add(self.chunk_size).cast_mut()
             } {
                 todo!(
                 "layout (size {} bytes and align {} bytes) cannot be allocated in a chunk ({} bytes)",
