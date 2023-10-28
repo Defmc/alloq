@@ -8,8 +8,8 @@ use crate::Alloqator;
 use spin::Mutex;
 
 pub struct Alloq {
-    heap_start: *const u8,
-    heap_end: *const u8,
+    heap_start: *mut u8,
+    heap_end: *mut u8,
     end: Mutex<(/* left */ *const u8, /* right */ *const u8)>,
 }
 
@@ -46,22 +46,22 @@ unsafe impl Allocator for Alloq {
 impl Alloqator for Alloq {
     type Metadata = ();
 
-    fn new(heap_range: core::ops::Range<*const u8>) -> Self
+    fn new(heap_range: core::ops::Range<*mut u8>) -> Self
     where
         Self: Sized,
     {
         Self {
             heap_start: heap_range.start,
             heap_end: heap_range.end,
-            end: (heap_range.start, heap_range.end).into(),
+            end: (heap_range.start.cast_const(), heap_range.end.cast_const()).into(),
         }
     }
 
-    fn heap_start(&self) -> *const u8 {
+    fn heap_start(&self) -> *mut u8 {
         self.heap_start
     }
 
-    fn heap_end(&self) -> *const u8 {
+    fn heap_end(&self) -> *mut u8 {
         self.heap_end
     }
 

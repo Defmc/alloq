@@ -57,7 +57,7 @@ unsafe impl Allocator for Alloq {
 
 impl Alloqator for Alloq {
     type Metadata = ();
-    fn new(_heap_range: core::ops::Range<*const u8>) -> Self
+    fn new(_heap_range: core::ops::Range<*mut u8>) -> Self
     where
         Self: Sized,
     {
@@ -66,11 +66,11 @@ impl Alloqator for Alloq {
 
     unsafe fn reset(&self) {}
 
-    fn heap_start(&self) -> *const u8 {
+    fn heap_start(&self) -> *mut u8 {
         panic!("there's no heap start");
     }
 
-    fn heap_end(&self) -> *const u8 {
+    fn heap_end(&self) -> *mut u8 {
         panic!("there's no heap end");
     }
 }

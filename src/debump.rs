@@ -10,13 +10,13 @@ use crate::Alloqator;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AlloqMetaData {
-    pub start: *const u8,
-    pub last_meta: *const u8,
+    pub start: *mut u8,
+    pub last_meta: *const AlloqMetaData,
     pub used: bool,
 }
 
 impl AlloqMetaData {
-    pub fn new(start: *const u8, last_meta: *const u8) -> Self {
+    pub fn new(start: *mut u8, last_meta: *const AlloqMetaData) -> Self {
         Self {
             start,
             last_meta,
@@ -24,9 +24,13 @@ impl AlloqMetaData {
         }
     }
 
-    pub unsafe fn write_meta(&self, obj_start: *mut u8, end: *const u8) -> (*mut u8, *const u8) {
-        let ptr_to_write = end.offset(-(mem::size_of::<Self>() as isize));
-        *(ptr_to_write as *mut AlloqMetaData) = *self;
+    pub unsafe fn write_meta(
+        &self,
+        obj_start: *mut u8,
+        end: *const u8,
+    ) -> (*mut u8, *const AlloqMetaData) {
+        let ptr_to_write = end.offset(-(mem::size_of::<Self>() as isize)) as *mut AlloqMetaData;
+        *ptr_to_write = *self;
         (obj_start, ptr_to_write)
     }
 
@@ -49,9 +53,13 @@ impl AlloqMetaData {
 /// A Deallocation-able Bump allocator. Works like `crate::bump::Alloq`, but has several mechanisms
 /// to deallocate in a stack-ish allocator
 pub struct Alloq {
-    pub heap_start: *const u8,
-    pub iter: Mutex<(usize, *mut u8, *const u8)>,
-    pub heap_end: *const u8,
+    pub heap_start: *mut u8,
+    pub heap_end: *mut u8,
+    pub iter: Mutex<(
+        /* allocations */ usize,
+        /* addr */ *mut u8,
+        /* last meta */ *const AlloqMetaData,
+    )>,
 }
 
 unsafe impl Allocator for Alloq {
@@ -105,21 +113,21 @@ unsafe impl Allocator for Alloq {
 impl Alloqator for Alloq {
     type Metadata = AlloqMetaData;
 
-    fn new(heap_range: Range<*const u8>) -> Self {
+    fn new(heap_range: Range<*mut u8>) -> Self {
         Self {
             heap_start: heap_range.start,
-            iter: Mutex::new((0, heap_range.start as *mut u8, null_mut())),
+            iter: Mutex::new((0, heap_range.start, null_mut())),
             heap_end: heap_range.end,
         }
     }
 
     #[inline(always)]
-    fn heap_start(&self) -> *const u8 {
+    fn heap_start(&self) -> *mut u8 {
         self.heap_start
     }
 
     #[inline(always)]
-    fn heap_end(&self) -> *const u8 {
+    fn heap_end(&self) -> *mut u8 {
         self.heap_end
     }
 
@@ -127,7 +135,7 @@ impl Alloqator for Alloq {
     unsafe fn reset(&self) {
         let mut lock = self.iter.lock();
         lock.0 = 0;
-        lock.1 = self.heap_start() as *mut u8;
+        lock.1 = self.heap_start();
         lock.2 = null_mut();
     }
 }

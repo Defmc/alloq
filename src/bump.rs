@@ -10,9 +10,9 @@ use crate::Alloqator;
 /// A simple linear allocator.
 /// # Allocation
 pub struct Alloq {
-    pub heap_start: *const u8,
+    pub heap_start: *mut u8,
     pub iter: Mutex<(usize, *mut u8)>,
-    pub heap_end: *const u8,
+    pub heap_end: *mut u8,
 }
 
 unsafe impl Allocator for Alloq {
@@ -22,7 +22,7 @@ unsafe impl Allocator for Alloq {
         let mut lock = self.iter.lock();
         let start = crate::align_up(lock.1 as usize, layout.align()) as *mut u8;
         let end = unsafe { start.offset(layout.size() as isize) };
-        if end > self.heap_end as *mut u8 {
+        if end > self.heap_end {
             panic!("no available memory")
         }
         lock.1 = end;
@@ -45,21 +45,21 @@ unsafe impl Allocator for Alloq {
 impl Alloqator for Alloq {
     type Metadata = ();
 
-    fn new(heap_range: Range<*const u8>) -> Self {
+    fn new(heap_range: Range<*mut u8>) -> Self {
         Self {
             heap_start: heap_range.start,
-            iter: Mutex::new((0, heap_range.start as *mut u8)),
+            iter: Mutex::new((0, heap_range.start)),
             heap_end: heap_range.end,
         }
     }
 
     #[inline(always)]
-    fn heap_start(&self) -> *const u8 {
+    fn heap_start(&self) -> *mut u8 {
         self.heap_start
     }
 
     #[inline(always)]
-    fn heap_end(&self) -> *const u8 {
+    fn heap_end(&self) -> *mut u8 {
         self.heap_end
     }
 
@@ -67,7 +67,7 @@ impl Alloqator for Alloq {
     unsafe fn reset(&self) {
         let mut lock = self.iter.lock();
         lock.0 = 0;
-        lock.1 = self.heap_start() as *mut u8;
+        lock.1 = self.heap_start();
     }
 }
 

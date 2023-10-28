@@ -19,7 +19,7 @@ pub struct AlloqMetaData {
 impl AlloqMetaData {
     pub unsafe fn allocate(
         list: *mut Self,
-        range: Range<*const u8>,
+        range: Range<*mut u8>,
         layout: Layout,
     ) -> (Self, *mut Self) {
         let range_start = if list.is_null() {
@@ -196,8 +196,8 @@ impl AllocMethod for BestFit {
 }
 
 pub struct Alloq<A: AllocMethod = FirstFit> {
-    pub heap_start: *const u8,
-    pub heap_end: *const u8,
+    pub heap_start: *mut u8,
+    pub heap_end: *mut u8,
     pub first: spin::Mutex<(*mut AlloqMetaData, *mut AlloqMetaData)>,
     pub _marker: PhantomData<A>,
 }
@@ -235,7 +235,7 @@ unsafe impl<A: AllocMethod> Allocator for Alloq<A> {
 impl<A: AllocMethod> Alloqator for Alloq<A> {
     type Metadata = AlloqMetaData;
 
-    fn new(heap_range: core::ops::Range<*const u8>) -> Self
+    fn new(heap_range: core::ops::Range<*mut u8>) -> Self
     where
         Self: Sized,
     {
@@ -260,11 +260,11 @@ impl<A: AllocMethod> Alloqator for Alloq<A> {
         lock.1 = offset.1;
     }
 
-    fn heap_start(&self) -> *const u8 {
+    fn heap_start(&self) -> *mut u8 {
         self.heap_start
     }
 
-    fn heap_end(&self) -> *const u8 {
+    fn heap_end(&self) -> *mut u8 {
         self.heap_end
     }
 }
