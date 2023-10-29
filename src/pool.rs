@@ -15,6 +15,7 @@ pub const DEFAULT_ALIGNMENT: usize = 2;
 pub struct RawChunk {
     pub addr: *mut u8,
     pub chunk: *const u8,
+    /// When freed, they point to the next free block. When allocated, to the continuous part.
     pub next: *mut Self,
     pub back: *mut Self,
 }
@@ -143,6 +144,61 @@ impl RawChunk {
             //    std::print!("({node:?}) .:. {:?} -> ", unsafe { &*node });
         }
         //std::println!("{:?}", null_mut::<Self>());
+    }
+
+    pub fn sort<'a>(&'a mut self) -> &'a mut Self {
+        // TODO: To avoid a `first` call, merge reverse.
+        // Divide it into a tree:
+        // e c b d a == MERGE(e, c, MERGE(b, d, MERGE(a, -, -)))
+        // e c
+        //     b d
+        //         a
+        let mut it = self.iter();
+        let l = it.next().unwrap();
+        if let Some(r) = it.next() {
+            unsafe {
+                (*l).disconnect();
+                (*r).disconnect();
+                let merged = Self::merge(&mut *l, &mut *r);
+                if let Some(n) = it.next() {
+                    let f = (*n).sort();
+                    Self::merge(merged, f)
+                } else {
+                    merged
+                }
+            }
+        } else {
+            unsafe { &mut *l }
+        }
+    }
+
+    pub unsafe fn merge<'a>(l: &'a mut Self, r: &'a mut Self) -> &'a mut Self {
+        let mut lit = l.iter().peekable();
+        let mut rit = r.iter().peekable();
+        let mut list = null_mut::<Self>();
+        let mut put_it = |node| {
+            if list.is_null() {
+                list = node;
+            } else {
+                Self::connect_unchecked(&mut *list, &mut *node);
+                list = node;
+            }
+        };
+        loop {
+            match (lit.peek(), rit.peek()) {
+                (None, None) => break,
+                (Some(_), None) => put_it(lit.next().unwrap()),
+                (None, Some(_)) => put_it(rit.next().unwrap()),
+                (Some(&le), Some(&re)) => {
+                    if (*le).chunk < (*re).chunk {
+                        put_it(lit.next().unwrap())
+                    } else {
+                        put_it(rit.next().unwrap())
+                    }
+                }
+            }
+        }
+        &mut *list
     }
 }
 
@@ -553,5 +609,28 @@ pub mod tests {
             v.push(x);
         }
         assert_eq!(v.iter().sum::<i32>(), 45i32);
+    }
+
+    #[test]
+    fn sort() {
+        let mut heap_stackish = [0; 1024];
+        let alloqer = Alloq::new(heap_stackish.as_mut_ptr_range());
+        let vec: Vec<_> = (0..5).map(|_| alloqer.alloq(Layout::new::<()>())).collect();
+        for p in vec {
+            unsafe { alloqer.dealloq(p, Layout::new::<()>()) }
+        }
+        unsafe {
+            let first = {
+                let lock = alloqer.pooler.lock();
+                (*lock.free_last).first()
+            };
+            let first = &mut *(first as *mut super::RawChunk);
+            let s = first.sort();
+            let mut last: *mut super::RawChunk = core::ptr::null_mut();
+            for p in s.iter() {
+                assert!(last.is_null() || (*last).chunk < (*p).chunk);
+                last = p;
+            }
+        }
     }
 }
