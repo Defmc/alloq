@@ -161,12 +161,12 @@ impl RawChunk {
         // e c
         //     b d
         //         a
-        let mut it = self.iter();
-        let l = it.next().unwrap();
-        if let Some(r) = it.next() {
+        let mut it = self.back_iter();
+        let r = it.next().unwrap();
+        if let Some(l) = it.next() {
             unsafe {
-                (*l).disconnect();
                 (*r).disconnect();
+                (*l).disconnect();
                 let merged = Self::merge(&mut *l, &mut *r);
                 if let Some(n) = it.next() {
                     let f = (*n).sort();
@@ -176,20 +176,23 @@ impl RawChunk {
                 }
             }
         } else {
-            unsafe { &mut *l }
+            unsafe { &mut *r }
         }
     }
 
     pub unsafe fn merge<'a>(l: &'a mut Self, r: &'a mut Self) -> &'a mut Self {
-        let mut lit = l.iter().peekable();
-        let mut rit = r.iter().peekable();
-        let mut list = null_mut::<Self>();
+        let mut lit = l.back_iter().peekable();
+        let mut rit = r.back_iter().peekable();
+        let (mut start, mut end) = (null_mut::<Self>(), null_mut::<Self>());
         let mut put_it = |node| {
-            if list.is_null() {
-                list = node;
+            if start.is_null() {
+                start = node;
+                end = node;
+                (*node).disconnect();
             } else {
-                Self::connect_unchecked(&mut *list, &mut *node);
-                list = node;
+                (*node).disconnect();
+                Self::connect_unchecked(&mut *node, &mut *start);
+                start = node;
             }
         };
         loop {
@@ -198,7 +201,7 @@ impl RawChunk {
                 (Some(_), None) => put_it(lit.next().unwrap()),
                 (None, Some(_)) => put_it(rit.next().unwrap()),
                 (Some(&le), Some(&re)) => {
-                    if (*le).chunk < (*re).chunk {
+                    if (*le).chunk > (*re).chunk {
                         put_it(lit.next().unwrap())
                     } else {
                         put_it(rit.next().unwrap())
@@ -206,7 +209,7 @@ impl RawChunk {
                 }
             }
         }
-        &mut *list
+        &mut *end
     }
     pub unsafe fn slice_until(&mut self, last: &mut RawChunk) {
         let back = self.back;
@@ -703,16 +706,12 @@ pub mod tests {
             unsafe { alloqer.dealloq(p, Layout::new::<()>()) }
         }
         unsafe {
-            let first = {
-                let lock = alloqer.pooler.lock();
-                (*lock.free_last).first()
-            };
-            let first = &mut *(first as *mut super::RawChunk);
-            let s = first.sort();
-            let mut last: *mut super::RawChunk = core::ptr::null_mut();
-            for p in s.iter() {
-                assert!(last.is_null() || (*last).chunk < (*p).chunk);
-                last = p;
+            let mut lock = alloqer.pooler.lock();
+            (*lock.free_last).sort();
+            let mut last = lock.free_last;
+            for c in (*lock.free_last).back_iter().skip(1) {
+                assert!(c > last, "c < last: {c:?} < {last:?}");
+                last = c;
             }
         }
     }
