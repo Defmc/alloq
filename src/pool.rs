@@ -174,28 +174,14 @@ pub struct Alloq {
 
 #[derive(Debug)]
 pub struct Pool {
-    used_head: *mut RawChunk,
     free_last: *mut RawChunk,
-    used_last: *mut RawChunk,
     list_end: *mut RawChunk,
 }
 
 impl Pool {
     /// # Safety
     /// `raw_chunk` must be a valid and previous allocated raw chunk.
-    pub unsafe fn push_used(&mut self, raw_chunk: *mut RawChunk) {
-        if self.used_head.is_null() {
-            self.used_head = raw_chunk;
-        }
-        if self.used_last.is_null() {
-            self.used_last = raw_chunk;
-        } else {
-            let last = &mut *self.used_last;
-            debug_assert!(last.next.is_null(), "`used_last` is not on top");
-            RawChunk::connect(last, &mut *raw_chunk);
-            self.used_last = raw_chunk;
-        }
-    }
+    pub unsafe fn push_used(&mut self, _raw_chunk: *mut RawChunk) {}
 
     pub fn get_free_chunk(&mut self, chunk_size: usize, align: usize) -> *mut RawChunk {
         let last = unsafe { &mut *self.free_last };
@@ -213,12 +199,6 @@ impl Pool {
     pub unsafe fn remove_used(&mut self, raw_chunk_ptr: *mut RawChunk) {
         let last_free = &mut *self.free_last;
         let raw_chunk = &mut *raw_chunk_ptr;
-        if self.used_head == raw_chunk_ptr {
-            self.used_head = raw_chunk.next;
-        }
-        if self.used_last == raw_chunk_ptr {
-            self.used_last = raw_chunk.back;
-        }
         raw_chunk.insert_in_list(last_free);
         self.free_last = raw_chunk_ptr;
     }
@@ -241,9 +221,7 @@ impl Alloq {
             chunk_size,
             align,
             pooler: Pool {
-                used_head: null_mut(),
                 free_last,
-                used_last: null_mut(),
                 list_end: end,
             }
             .into(),
@@ -349,8 +327,6 @@ impl Alloqator for Alloq {
         let free_last = unsafe {
             RawChunk::new(self.heap_start(), self.align).allocate(&mut end, self.chunk_size)
         };
-        pooler.used_head = null_mut();
-        pooler.used_last = null_mut();
         pooler.free_last = free_last;
         pooler.list_end = end;
     }
