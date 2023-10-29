@@ -133,12 +133,13 @@ impl RawChunk {
         RawChunkIter((self as *const RawChunk) as *mut RawChunk)
     }
 
+    #[inline(always)]
+    pub fn back_iter(&self) -> RawChunkBackIter {
+        RawChunkBackIter((self as *const RawChunk) as *mut RawChunk)
+    }
+
     pub fn first(&self) -> *const RawChunk {
-        let mut first = self;
-        while !first.back.is_null() {
-            first = unsafe { &*first.back };
-        }
-        first
+        self.back_iter().last().unwrap()
     }
 
     #[inline(always)]
@@ -229,6 +230,21 @@ impl Iterator for RawChunkIter {
             None
         } else {
             self.0 = unsafe { (*self.0).next };
+            Some(r)
+        }
+    }
+}
+
+pub struct RawChunkBackIter(*mut RawChunk);
+
+impl Iterator for RawChunkBackIter {
+    type Item = *mut RawChunk;
+    fn next(&mut self) -> Option<Self::Item> {
+        let r = self.0;
+        if r.is_null() {
+            None
+        } else {
+            self.0 = unsafe { (*self.0).back };
             Some(r)
         }
     }
