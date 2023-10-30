@@ -310,6 +310,8 @@ impl Pool {
         let mut last: *mut RawChunk = null_mut();
         for c in (*first).iter() {
             if !start.is_null() && (*last).next == c {
+        let mut aligned: *mut RawChunk = null_mut();
+        // TODO: use `chunk_size` for optimisation reasons
                 last = c;
                 if needed <= chunk_size {
                     (*start).slice_until(&mut *last);
@@ -322,6 +324,7 @@ impl Pool {
                 last = c;
                 let aligned = crate::align_up(start as usize, layout.align());
                 needed = layout.size() - (aligned - (start as usize));
+                aligned = crate::align_up(start as usize, layout.align()) as *mut RawChunk;
             }
         }
         while needed > 0 {
