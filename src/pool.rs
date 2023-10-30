@@ -304,35 +304,35 @@ impl Pool {
         chunk_align: usize,
         layout: core::alloc::Layout,
     ) -> *mut RawChunk {
-        let first = (*self.free_last).first();
         let mut needed = layout.size();
         let mut start: *mut RawChunk = null_mut();
         let mut last: *mut RawChunk = null_mut();
-        for c in (*first).iter() {
-            if !start.is_null() && (*last).next == c {
         let mut aligned: *mut RawChunk = null_mut();
         // TODO: use `chunk_size` for optimisation reasons
+        for c in (*self.free_last).back_iter() {
+            if last.is_null() {
                 last = c;
-                if needed <= chunk_size {
-                    (*start).slice_until(&mut *last);
-                    return start;
-                } else {
-                    needed -= chunk_size;
-                }
-            } else {
                 start = c;
-                last = c;
-                let aligned = crate::align_up(start as usize, layout.align());
-                needed = layout.size() - (aligned - (start as usize));
                 aligned = crate::align_up(start as usize, layout.align()) as *mut RawChunk;
+            } else if (*start).back == c {
+                start = c;
+            } else {
+                last = null_mut();
+                start = null_mut();
+                aligned = null_mut();
+            }
+            if aligned.offset_from(last) >= needed as isize {
+                (*start).slice_until(&mut *last);
+                return start;
             }
         }
-        while needed > 0 {
+        if aligned.is_null() {
+            start = self.free_last;
+            last = self.free_last;
+            aligned = crate::align_up(self.free_last as usize, layout.align()) as *mut RawChunk;
+        }
+        while aligned.offset_from(last) < needed as isize {
             last = (*last).alloc_next(&mut self.list_end, chunk_size, chunk_align);
-            if needed < chunk_size {
-                break;
-            }
-            needed -= chunk_size;
         }
         (*last).alloc_next(&mut self.list_end, chunk_size, chunk_align);
         (*start).slice_until(&mut *last);
