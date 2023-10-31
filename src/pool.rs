@@ -129,10 +129,10 @@ impl RawChunk {
     }
 
     pub fn log_list(&self) {
-        // for node in unsafe { (*self.first()).iter() } {
-        //     std::println!("({node:?}) .:. {:?} -> ", unsafe { &*node });
-        // }
-        // std::println!("{:?}", null_mut::<Self>());
+        for node in unsafe { (*(*self).first()).iter() } {
+            std::print!("({node:?}) .:. {:?} -> ", unsafe { &*node });
+        }
+        std::println!("{:?}", null_mut::<Self>());
     }
 
     pub fn sort<'a>(&'a mut self) -> &'a mut Self {
@@ -201,6 +201,8 @@ impl RawChunk {
         if !back.is_null() {
             (*back).next = next;
         }
+        self.back = null_mut();
+        last.next = null_mut();
     }
 }
 
@@ -233,6 +235,8 @@ impl Iterator for RawChunkBackIter {
         }
     }
 }
+
+extern crate std;
 
 /// An fixed-size allocator with a pool memory managment. Using a native reverse link-list, its map
 /// the block and use two lists to cache them.
@@ -268,7 +272,6 @@ impl Pool {
     pub unsafe fn remove_used(&mut self, raw_chunk_ptr: *mut RawChunk) {
         let raw_chunk = &mut *raw_chunk_ptr;
         let last = raw_chunk.iter().last().unwrap();
-        raw_chunk.log_list();
         RawChunk::connect_unchecked(&mut *self.free_last, &mut *last);
         self.free_last = last;
     }
@@ -279,44 +282,49 @@ impl Pool {
     pub unsafe fn get_free_chunk_chain_ordered(
         &mut self,
         chunk_size: usize,
-        chunk_align: usize,
+        _chunk_align: usize,
         layout: core::alloc::Layout,
     ) -> *mut RawChunk {
         let needed = layout.size();
         let mut start: *mut RawChunk = null_mut();
         let mut last: *mut RawChunk = null_mut();
-        let mut aligned: *mut RawChunk = null_mut();
+        let mut aligned: *mut u8 = null_mut();
         // TODO: use `chunk_size` for optimisation reasons
         for c in (*self.free_last).back_iter() {
             if last.is_null() {
                 last = c;
                 start = c;
-                aligned = crate::align_up(start as usize, layout.align()) as *mut RawChunk;
-            } else if (*start).back == c {
+                aligned = crate::align_up((*start).chunk as usize, layout.align()) as *mut u8;
+            } else if (*start).chunk.offset_from((*c).chunk) == chunk_size as isize {
                 start = c;
+                aligned = crate::align_up((*start).chunk as usize, layout.align()) as *mut u8;
             } else {
                 last = null_mut();
                 start = null_mut();
                 aligned = null_mut();
             }
-            if aligned.offset_from(last) >= needed as isize {
-                if last == self.free_last {
-                    (*self.free_last).alloc_next(&mut self.list_end, chunk_size, chunk_align);
+            if !last.is_null() && (*last).chunk.offset_from(aligned) >= needed as isize {
+                if last == self.list_end {
+                    self.free_last =
+                        (*self.list_end).alloc_next(&mut self.list_end, chunk_size, layout.align());
                 }
                 (*start).slice_until(&mut *last);
+                (*start).addr = aligned as *mut u8;
                 return start;
             }
         }
         if aligned.is_null() {
-            start = self.free_last;
-            last = self.free_last;
-            aligned = crate::align_up(self.free_last as usize, layout.align()) as *mut RawChunk;
+            start = self.list_end;
+            last = self.list_end;
+            aligned = crate::align_up((*start).chunk as usize, layout.align()) as *mut u8;
         }
-        while aligned.offset_from(last) < needed as isize {
-            last = (*last).alloc_next(&mut self.list_end, chunk_size, chunk_align);
+        while (*last).chunk.offset_from(aligned) < needed as isize {
+            last = (*self.list_end).alloc_next(&mut self.list_end, chunk_size, layout.align());
         }
-        (*last).alloc_next(&mut self.list_end, chunk_size, chunk_align);
+        self.free_last =
+            (*self.list_end).alloc_next(&mut self.list_end, chunk_size, layout.align());
         (*start).slice_until(&mut *last);
+        (*start).addr = aligned as *mut u8;
         start
     }
 }
@@ -409,11 +417,25 @@ unsafe impl Allocator for Alloq {
                 }
             }
         };
+        unsafe {
+            std::println!(
+                "allocated {:?} (in {:?}) for {:?}",
+                (*chunk).chunk,
+                chunk,
+                (*chunk).addr
+            );
+            std::println!("list:");
+            for c in (*chunk).iter() {
+                std::println!("\t{:?}", (*c).chunk);
+            }
+            std::println!("");
+        }
         let ptr = unsafe { (*chunk).addr };
         let slice = unsafe {
             core::slice::from_raw_parts_mut(
                 ptr,
-                self.chunk_size - (*chunk).addr.offset(-((*chunk).chunk as isize)) as usize,
+                self.chunk_size * (*chunk).iter().count()
+                    - (*chunk).addr.offset_from((*chunk).chunk) as usize,
             )
         };
         NonNull::new(slice).ok_or(AllocError)
@@ -686,9 +708,11 @@ pub mod tests {
 
     #[test]
     fn sort() {
-        let mut heap_stackish = [0; 1024];
+        let mut heap_stackish = [0; 1024 * 1024];
         let alloqer = Alloq::new(heap_stackish.as_mut_ptr_range());
-        let vec: Vec<_> = (0..5).map(|_| alloqer.alloq(Layout::new::<()>())).collect();
+        let vec: Vec<_> = (0..1024)
+            .map(|_| alloqer.alloq(Layout::new::<()>()))
+            .collect();
         for p in vec.iter().rev().cloned() {
             unsafe { alloqer.dealloq(p, Layout::new::<()>()) }
         }
@@ -697,7 +721,7 @@ pub mod tests {
             (*lock.free_last).sort();
             let mut last = lock.free_last;
             for c in (*lock.free_last).back_iter().skip(1) {
-                assert!(c > last, "c < last: {c:?} < {last:?}");
+                assert!((*c).chunk < (*last).chunk, "c < last: {c:?} < {last:?}");
                 last = c;
             }
         }
