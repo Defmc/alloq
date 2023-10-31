@@ -77,6 +77,7 @@ fn main() {
     let system = system::Alloq::new(unsafe { HEAP_SIM.as_mut_ptr_range() });
 
     println!("running benchmarks");
+    println!("heap range: {:?}", unsafe { HEAP_SIM.as_mut_ptr_range() });
     run_benches!(dir, &first, &best, &bump, &debump, &pool, &statiq, &system, &flex_pool);
     println!("benchmarks results saved on {dir}");
 }
