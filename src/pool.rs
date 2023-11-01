@@ -129,10 +129,10 @@ impl RawChunk {
     }
 
     pub fn log_list(&self) {
-        for node in unsafe { (*(*self).first()).iter() } {
-            std::print!("({node:?}) .:. {:?} -> ", unsafe { &*node });
-        }
-        std::println!("{:?}", null_mut::<Self>());
+        // for node in unsafe { (*(*self).first()).iter() } {
+        //     std::print!("({node:?}) .:. {:?} -> ", unsafe { &*node });
+        // }
+        // std::println!("{:?}", null_mut::<Self>());
     }
 
     pub fn sort<'a>(&'a mut self) -> &'a mut Self {
@@ -236,8 +236,6 @@ impl Iterator for RawChunkBackIter {
     }
 }
 
-extern crate std;
-
 /// An fixed-size allocator with a pool memory managment. Using a native reverse link-list, its map
 /// the block and use two lists to cache them.
 #[derive(Debug)]
@@ -289,24 +287,31 @@ impl Pool {
         let mut start: *mut RawChunk = null_mut();
         let mut last: *mut RawChunk = null_mut();
         let mut aligned: *mut u8 = null_mut();
+        let is_continous = |back: *mut RawChunk, next: *mut RawChunk| {
+            (*next).chunk.offset_from((*back).chunk) == chunk_size as isize
+        };
         // TODO: use `chunk_size` for optimisation reasons
         for c in (*self.free_last).back_iter() {
             if last.is_null() {
                 last = c;
                 start = c;
                 aligned = crate::align_up((*start).chunk as usize, layout.align()) as *mut u8;
-            } else if (*start).chunk.offset_from((*c).chunk) == chunk_size as isize {
+            } else if is_continous(start, c) {
                 start = c;
                 aligned = crate::align_up((*start).chunk as usize, layout.align()) as *mut u8;
             } else {
                 last = null_mut();
                 start = null_mut();
                 aligned = null_mut();
+                continue;
             }
-            if !last.is_null() && (*last).chunk.offset_from(aligned) >= needed as isize {
+            if (*last).chunk.offset_from(aligned) >= needed as isize {
                 if last == self.list_end {
-                    self.free_last =
-                        (*self.list_end).alloc_next(&mut self.list_end, chunk_size, layout.align());
+                    self.free_last = (*self.free_last).alloc_next(
+                        &mut self.list_end,
+                        chunk_size,
+                        layout.align(),
+                    );
                 }
                 (*start).slice_until(&mut *last);
                 (*start).addr = aligned as *mut u8;
@@ -314,15 +319,18 @@ impl Pool {
             }
         }
         if aligned.is_null() {
-            start = self.list_end;
-            last = self.list_end;
+            self.free_last =
+                (*self.free_last).alloc_next(&mut self.list_end, chunk_size, layout.align());
+            start = self.free_last;
             aligned = crate::align_up((*start).chunk as usize, layout.align()) as *mut u8;
         }
-        while (*last).chunk.offset_from(aligned) < needed as isize {
-            last = (*self.list_end).alloc_next(&mut self.list_end, chunk_size, layout.align());
+        while (*self.free_last).chunk.offset_from(aligned) < needed as isize {
+            self.free_last =
+                (*self.free_last).alloc_next(&mut self.list_end, chunk_size, layout.align());
         }
+        last = self.free_last;
         self.free_last =
-            (*self.list_end).alloc_next(&mut self.list_end, chunk_size, layout.align());
+            (*self.free_last).alloc_next(&mut self.list_end, chunk_size, layout.align());
         (*start).slice_until(&mut *last);
         (*start).addr = aligned as *mut u8;
         start
@@ -402,9 +410,7 @@ unsafe impl Allocator for Alloq {
                 } {
                     unsafe {
                         pooler.remove_used(chunk);
-                        let first = (*pooler.free_last).first();
-                        let first = &mut *(first as *mut RawChunk);
-                        first.sort();
+                        pooler.free_last = (*pooler.free_last).sort();
                         pooler.get_free_chunk_chain_ordered(self.chunk_size, self.align, layout)
                     }
                 } else {
@@ -418,24 +424,28 @@ unsafe impl Allocator for Alloq {
             }
         };
         unsafe {
-            std::println!(
-                "allocated {:?} (in {:?}) for {:?}",
-                (*chunk).chunk,
-                chunk,
-                (*chunk).addr
-            );
-            std::println!("list:");
-            for c in (*chunk).iter() {
-                std::println!("\t{:?}", (*c).chunk);
+            let mut p = (*chunk).iter().peekable();
+            while let Some(c) = p.next() {
+                if let Some(&c2) = p.peek() {
+                    debug_assert!(
+                        (*c2).chunk.offset_from((*c).chunk) == self.chunk_size as isize,
+                        "{:?} is not close to {:?}. Should be {}, it's {}",
+                        (*c2).chunk,
+                        (*c).chunk,
+                        self.chunk_size,
+                        (*c2).chunk.offset_from((*c).chunk)
+                    );
+                }
             }
-            std::println!("");
         }
         let ptr = unsafe { (*chunk).addr };
         let slice = unsafe {
             core::slice::from_raw_parts_mut(
                 ptr,
-                self.chunk_size * (*chunk).iter().count()
-                    - (*chunk).addr.offset_from((*chunk).chunk) as usize,
+                (*(*chunk).iter().last().unwrap())
+                    .chunk
+                    .add(self.chunk_size)
+                    .offset_from((*chunk).addr) as usize,
             )
         };
         NonNull::new(slice).ok_or(AllocError)
