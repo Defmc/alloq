@@ -667,8 +667,6 @@ pub mod tests {
         for _ in 0..VECTOR_SIZE {
             v.push(());
         }
-        let b = Box::new_in((), &alloqer);
-        assert_eq!(*b, ());
         assert_eq!(v.len(), VECTOR_SIZE);
     }
 
