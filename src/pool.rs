@@ -161,7 +161,9 @@ impl RawChunk {
         }
     }
 
-    pub fn merge<'a>(l: &'a mut Self, r: &'a mut Self) -> &'a mut Self {
+    // Internal mutation
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    pub fn merge<'a>(l: &mut Self, r: &mut Self) -> &'a mut Self {
         let mut lit = l.back_iter().peekable();
         let mut rit = r.back_iter().peekable();
         let (mut start, mut end) = (null_mut::<Self>(), null_mut::<Self>());
