@@ -70,7 +70,7 @@ jobs:
       - checkout
       - setup-cache-env
       - restore-cache
-      - run: cargo +<<pipeline.parameters.toolchain>> -vv --all --all-features -- --show-output --test-threads=1
+      - run: cargo +<<pipeline.parameters.toolchain>> test -vv --all --all-features -- --show-output --test-threads=1
       - save-cache
 
   udeps:
