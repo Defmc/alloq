@@ -135,7 +135,7 @@ impl RawChunk {
         // std::println!("{:?}", null_mut::<Self>());
     }
 
-    pub fn sort<'a>(&'a mut self) -> &'a mut Self {
+    pub fn sort(&mut self) -> &mut Self {
         // TODO: To avoid a `first` call, merge reverse.
         // Divide it into a tree:
         // e c b d a == MERGE(e, c, MERGE(b, d, MERGE(a, -, -)))
@@ -161,11 +161,11 @@ impl RawChunk {
         }
     }
 
-    pub unsafe fn merge<'a>(l: &'a mut Self, r: &'a mut Self) -> &'a mut Self {
+    pub fn merge<'a>(l: &'a mut Self, r: &'a mut Self) -> &'a mut Self {
         let mut lit = l.back_iter().peekable();
         let mut rit = r.back_iter().peekable();
         let (mut start, mut end) = (null_mut::<Self>(), null_mut::<Self>());
-        let mut put_it = |node| {
+        let mut put_it = |node| unsafe {
             if start.is_null() {
                 start = node;
                 end = node;
@@ -181,17 +181,23 @@ impl RawChunk {
                 (None, None) => break,
                 (Some(_), None) => put_it(lit.next().unwrap()),
                 (None, Some(_)) => put_it(rit.next().unwrap()),
-                (Some(&le), Some(&re)) => {
+                (Some(&le), Some(&re)) => unsafe {
                     if (*le).chunk > (*re).chunk {
                         put_it(lit.next().unwrap())
                     } else {
                         put_it(rit.next().unwrap())
                     }
-                }
+                },
             }
         }
-        &mut *end
+        unsafe { &mut *end }
     }
+
+    /// Slice from `self` to `last` in a list, linking the missing parts of `self.back` and
+    /// `last.next`
+    /// # Safety
+    /// `self` must be chained with `last` at some level, where `last` is after `self` and doesn't
+    /// contain cyclic reference
     pub unsafe fn slice_until(&mut self, last: &mut RawChunk) {
         let back = self.back;
         let next = last.next;
@@ -286,7 +292,7 @@ impl Pool {
         let needed = layout.size();
         let mut start: *mut RawChunk = null_mut();
         let mut last: *mut RawChunk = null_mut();
-        let mut aligned: *mut u8 = null_mut();
+        let mut aligned: *mut u8;
         let is_continous = |back: *mut RawChunk, next: *mut RawChunk| {
             (*next).chunk.offset_from((*back).chunk) == chunk_size as isize
         };
@@ -302,7 +308,6 @@ impl Pool {
             } else {
                 last = null_mut();
                 start = null_mut();
-                aligned = null_mut();
                 continue;
             }
             if (*last).chunk.offset_from(aligned) >= needed as isize {
@@ -314,7 +319,7 @@ impl Pool {
                     );
                 }
                 (*start).slice_until(&mut *last);
-                (*start).addr = aligned as *mut u8;
+                (*start).addr = aligned;
                 return start;
             }
         }
@@ -330,7 +335,7 @@ impl Pool {
         self.free_last =
             (*self.free_last).alloc_next(&mut self.list_end, chunk_size, layout.align());
         (*start).slice_until(&mut *last);
-        (*start).addr = aligned as *mut u8;
+        (*start).addr = aligned;
         (*start).back = last;
         start
     }
