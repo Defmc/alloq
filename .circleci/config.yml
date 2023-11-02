@@ -4,7 +4,7 @@ parameters:
   toolchain:
     description: defines the toolchain to be used, can be "nightly", "beta" or "stable"
     type: string
-    default: "stable"
+    default: "nightly"
 
 commands:
 
