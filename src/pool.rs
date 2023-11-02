@@ -97,18 +97,6 @@ impl RawChunk {
     }
 
     #[inline(always)]
-    pub fn insert_in_list(&mut self, back: &mut RawChunk) {
-        self.disconnect();
-        let next = back.next;
-        Self::connect_unchecked(back, self);
-        if !next.is_null() {
-            unsafe {
-                Self::connect_unchecked(self, &mut *next);
-            }
-        }
-    }
-
-    #[inline(always)]
     pub fn connect(back: &mut Self, next: &mut Self) {
         assert!(back.next.is_null());
         assert!(next.back.is_null());
@@ -126,12 +114,13 @@ impl RawChunk {
         RawChunkIter((self as *const RawChunk) as *mut RawChunk)
     }
 
+    #[inline(always)]
+    pub fn back_iter(&self) -> RawChunkBackIter {
+        RawChunkBackIter((self as *const RawChunk) as *mut RawChunk)
+    }
+
     pub fn first(&self) -> *const RawChunk {
-        let mut first = self;
-        while !first.back.is_null() {
-            first = unsafe { &*first.back };
-        }
-        first
+        self.back_iter().last().unwrap()
     }
 
     #[inline(always)]
@@ -140,10 +129,10 @@ impl RawChunk {
     }
 
     pub fn log_list(&self) {
-        for _node in unsafe { (*self.first()).iter() } {
-            //    std::print!("({node:?}) .:. {:?} -> ", unsafe { &*node });
-        }
-        //std::println!("{:?}", null_mut::<Self>());
+        // for node in unsafe { (*(*self).first()).iter() } {
+        //     std::print!("({node:?}) .:. {:?} -> ", unsafe { &*node });
+        // }
+        // std::println!("{:?}", null_mut::<Self>());
     }
 
     pub fn sort<'a>(&'a mut self) -> &'a mut Self {
@@ -153,12 +142,12 @@ impl RawChunk {
         // e c
         //     b d
         //         a
-        let mut it = self.iter();
-        let l = it.next().unwrap();
-        if let Some(r) = it.next() {
+        let mut it = self.back_iter();
+        let r = it.next().unwrap();
+        if let Some(l) = it.next() {
             unsafe {
-                (*l).disconnect();
                 (*r).disconnect();
+                (*l).disconnect();
                 let merged = Self::merge(&mut *l, &mut *r);
                 if let Some(n) = it.next() {
                     let f = (*n).sort();
@@ -168,20 +157,23 @@ impl RawChunk {
                 }
             }
         } else {
-            unsafe { &mut *l }
+            unsafe { &mut *r }
         }
     }
 
     pub unsafe fn merge<'a>(l: &'a mut Self, r: &'a mut Self) -> &'a mut Self {
-        let mut lit = l.iter().peekable();
-        let mut rit = r.iter().peekable();
-        let mut list = null_mut::<Self>();
+        let mut lit = l.back_iter().peekable();
+        let mut rit = r.back_iter().peekable();
+        let (mut start, mut end) = (null_mut::<Self>(), null_mut::<Self>());
         let mut put_it = |node| {
-            if list.is_null() {
-                list = node;
+            if start.is_null() {
+                start = node;
+                end = node;
+                (*node).disconnect();
             } else {
-                Self::connect_unchecked(&mut *list, &mut *node);
-                list = node;
+                (*node).disconnect();
+                Self::connect_unchecked(&mut *node, &mut *start);
+                start = node;
             }
         };
         loop {
@@ -190,7 +182,7 @@ impl RawChunk {
                 (Some(_), None) => put_it(lit.next().unwrap()),
                 (None, Some(_)) => put_it(rit.next().unwrap()),
                 (Some(&le), Some(&re)) => {
-                    if (*le).chunk < (*re).chunk {
+                    if (*le).chunk > (*re).chunk {
                         put_it(lit.next().unwrap())
                     } else {
                         put_it(rit.next().unwrap())
@@ -198,7 +190,19 @@ impl RawChunk {
                 }
             }
         }
-        &mut *list
+        &mut *end
+    }
+    pub unsafe fn slice_until(&mut self, last: &mut RawChunk) {
+        let back = self.back;
+        let next = last.next;
+        if !next.is_null() {
+            (*next).back = back;
+        }
+        if !back.is_null() {
+            (*back).next = next;
+        }
+        self.back = null_mut();
+        last.next = null_mut();
     }
 }
 
@@ -212,6 +216,21 @@ impl Iterator for RawChunkIter {
             None
         } else {
             self.0 = unsafe { (*self.0).next };
+            Some(r)
+        }
+    }
+}
+
+pub struct RawChunkBackIter(*mut RawChunk);
+
+impl Iterator for RawChunkBackIter {
+    type Item = *mut RawChunk;
+    fn next(&mut self) -> Option<Self::Item> {
+        let r = self.0;
+        if r.is_null() {
+            None
+        } else {
+            self.0 = unsafe { (*self.0).back };
             Some(r)
         }
     }
@@ -235,10 +254,6 @@ pub struct Pool {
 }
 
 impl Pool {
-    /// # Safety
-    /// `raw_chunk` must be a valid and previous allocated raw chunk.
-    pub unsafe fn push_used(&mut self, _raw_chunk: *mut RawChunk) {}
-
     pub fn get_free_chunk(&mut self, chunk_size: usize, align: usize) -> *mut RawChunk {
         let last = unsafe { &mut *self.free_last };
         let freed = if last.back.is_null() {
@@ -253,10 +268,71 @@ impl Pool {
     /// # Safety
     /// `ptr` must be previous returned by `Alloq::allocate`.
     pub unsafe fn remove_used(&mut self, raw_chunk_ptr: *mut RawChunk) {
-        let last_free = &mut *self.free_last;
         let raw_chunk = &mut *raw_chunk_ptr;
-        raw_chunk.insert_in_list(last_free);
-        self.free_last = raw_chunk_ptr;
+        let last = raw_chunk.back; // TODO: Optimise and use `back` from the
+        RawChunk::connect_unchecked(&mut *self.free_last, raw_chunk);
+        self.free_last = if last.is_null() { raw_chunk_ptr } else { last };
+    }
+
+    /// Get a `RawChunk` chain that can allocate the `layout`
+    /// # Safety
+    /// The `free` must be ordered and `layout.size` must need more than one chunk
+    pub unsafe fn get_free_chunk_chain_ordered(
+        &mut self,
+        chunk_size: usize,
+        _chunk_align: usize,
+        layout: core::alloc::Layout,
+    ) -> *mut RawChunk {
+        let needed = layout.size();
+        let mut start: *mut RawChunk = null_mut();
+        let mut last: *mut RawChunk = null_mut();
+        let mut aligned: *mut u8 = null_mut();
+        let is_continous = |back: *mut RawChunk, next: *mut RawChunk| {
+            (*next).chunk.offset_from((*back).chunk) == chunk_size as isize
+        };
+        // TODO: use `chunk_size` for optimisation reasons
+        for c in (*self.free_last).back_iter() {
+            if last.is_null() {
+                last = c;
+                start = c;
+                aligned = crate::align_up((*start).chunk as usize, layout.align()) as *mut u8;
+            } else if is_continous(start, c) {
+                start = c;
+                aligned = crate::align_up((*start).chunk as usize, layout.align()) as *mut u8;
+            } else {
+                last = null_mut();
+                start = null_mut();
+                aligned = null_mut();
+                continue;
+            }
+            if (*last).chunk.offset_from(aligned) >= needed as isize {
+                if last == self.list_end {
+                    self.free_last = (*self.free_last).alloc_next(
+                        &mut self.list_end,
+                        chunk_size,
+                        layout.align(),
+                    );
+                }
+                (*start).slice_until(&mut *last);
+                (*start).addr = aligned as *mut u8;
+                return start;
+            }
+        }
+        self.free_last =
+            (*self.free_last).alloc_next(&mut self.list_end, chunk_size, layout.align());
+        start = self.free_last;
+        aligned = crate::align_up((*start).chunk as usize, layout.align()) as *mut u8;
+        while (*self.free_last).chunk.offset_from(aligned) < needed as isize {
+            self.free_last =
+                (*self.free_last).alloc_next(&mut self.list_end, chunk_size, layout.align());
+        }
+        last = self.free_last;
+        self.free_last =
+            (*self.free_last).alloc_next(&mut self.list_end, chunk_size, layout.align());
+        (*start).slice_until(&mut *last);
+        (*start).addr = aligned as *mut u8;
+        (*start).back = last;
+        start
     }
 }
 
@@ -270,6 +346,14 @@ impl Alloq {
     ) -> Self {
         // SAFE: Its will not be even used as a `RawChunk`.
         let mut end = heap_range.end as *mut RawChunk;
+        // FIXME: I don't think so.
+        // Metadata is not allocated by the allocator, it's by `RawChunk` using a simple pointer
+        // move.
+        assert!(
+            chunk_size > mem::size_of::<RawChunk>(),
+            "can't allocate any blocks (minimum > {})",
+            mem::size_of::<RawChunk>()
+        );
         let free_last = RawChunk::new(heap_range.start, align).allocate(&mut end, chunk_size);
         Self {
             heap_start: heap_range.start,
@@ -316,31 +400,51 @@ unsafe impl Allocator for Alloq {
     /// one.
     fn allocate(&self, layout: core::alloc::Layout) -> Result<NonNull<[u8]>, AllocError> {
         let chunk = {
-            let mut pooler = self.pooler.lock();
-            let chunk = pooler.get_free_chunk(self.chunk_size, layout.align());
-            unsafe { pooler.push_used(chunk) };
-            if unsafe {
-                (*chunk).addr.add(layout.size()) > (*chunk).chunk.add(self.chunk_size).cast_mut()
-            } {
-                todo!(
-                "layout (size {} bytes and align {} bytes) cannot be allocated in a chunk ({} bytes)",
-                layout.size(),
-                layout.align(),
-                self.chunk_size
-            );
+            {
+                let mut pooler = self.pooler.lock();
+                let chunk = pooler.get_free_chunk(self.chunk_size, layout.align());
+                if unsafe {
+                    (*chunk).addr.add(layout.size())
+                        > (*chunk).chunk.add(self.chunk_size).cast_mut()
+                } {
+                    unsafe {
+                        pooler.remove_used(chunk);
+                        pooler.free_last = (*pooler.free_last).sort();
+                        pooler.get_free_chunk_chain_ordered(self.chunk_size, self.align, layout)
+                    }
+                } else {
+                    debug_assert!(
+                        self.heap_range()
+                            .contains(unsafe { &(*chunk).chunk.cast_mut() }),
+                        "out of heap"
+                    );
+                    chunk
+                }
             }
-            debug_assert!(
-                self.heap_range()
-                    .contains(unsafe { &(*chunk).chunk.cast_mut() }),
-                "out of heap"
-            );
-            chunk
         };
+        unsafe {
+            let mut p = (*chunk).iter().peekable();
+            while let Some(c) = p.next() {
+                if let Some(&c2) = p.peek() {
+                    debug_assert!(
+                        (*c2).chunk.offset_from((*c).chunk) == self.chunk_size as isize,
+                        "{:?} is not close to {:?}. Should be {}, it's {}",
+                        (*c2).chunk,
+                        (*c).chunk,
+                        self.chunk_size,
+                        (*c2).chunk.offset_from((*c).chunk)
+                    );
+                }
+            }
+        }
         let ptr = unsafe { (*chunk).addr };
         let slice = unsafe {
             core::slice::from_raw_parts_mut(
                 ptr,
-                self.chunk_size - (*chunk).addr.offset(-((*chunk).chunk as isize)) as usize,
+                (*(*chunk).iter().last().unwrap())
+                    .chunk
+                    .add(self.chunk_size)
+                    .offset_from((*chunk).addr) as usize,
             )
         };
         NonNull::new(slice).ok_or(AllocError)
@@ -613,24 +717,42 @@ pub mod tests {
 
     #[test]
     fn sort() {
-        let mut heap_stackish = [0; 1024];
+        let mut heap_stackish = [0; 1024 * 1024];
         let alloqer = Alloq::new(heap_stackish.as_mut_ptr_range());
-        let vec: Vec<_> = (0..5).map(|_| alloqer.alloq(Layout::new::<()>())).collect();
-        for p in vec {
+        let vec: Vec<_> = (0..1024)
+            .map(|_| alloqer.alloq(Layout::new::<()>()))
+            .collect();
+        for p in vec.iter().rev().cloned() {
             unsafe { alloqer.dealloq(p, Layout::new::<()>()) }
         }
         unsafe {
-            let first = {
-                let lock = alloqer.pooler.lock();
-                (*lock.free_last).first()
-            };
-            let first = &mut *(first as *mut super::RawChunk);
-            let s = first.sort();
-            let mut last: *mut super::RawChunk = core::ptr::null_mut();
-            for p in s.iter() {
-                assert!(last.is_null() || (*last).chunk < (*p).chunk);
-                last = p;
+            let mut lock = alloqer.pooler.lock();
+            (*lock.free_last).sort();
+            let mut last = lock.free_last;
+            for c in (*lock.free_last).back_iter().skip(1) {
+                assert!((*c).chunk < (*last).chunk, "c < last: {c:?} < {last:?}");
+                last = c;
             }
         }
+    }
+
+    #[test]
+    fn tiny_chunk_allocation() {
+        let mut heap_stackish = [0u8; 1024];
+        let alloqer = unsafe { Alloq::with_chunk_size(heap_stackish.as_mut_ptr_range(), 48, 2) };
+        let v: Vec<_> = (0..10u128).map(|x| Box::new_in(x, &alloqer)).collect();
+        assert!(v.iter().enumerate().all(|(i, x)| **x == i as u128));
+    }
+
+    #[test]
+    fn tiny_chunk_unsorted_allocation() {
+        let mut heap_stackish = [0u8; 1024];
+        let alloqer = unsafe { Alloq::with_chunk_size(heap_stackish.as_mut_ptr_range(), 48, 2) };
+        let vec: Vec<_> = (0..5).map(|_| alloqer.alloq(Layout::new::<()>())).collect();
+        for p in vec.iter().rev().cloned() {
+            unsafe { alloqer.dealloq(p, Layout::new::<()>()) }
+        }
+        let v: Vec<_> = (0..10u128).map(|x| Box::new_in(x, &alloqer)).collect();
+        assert!(v.iter().enumerate().all(|(i, x)| **x == i as u128));
     }
 }
