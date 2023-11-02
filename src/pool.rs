@@ -269,9 +269,9 @@ impl Pool {
     /// `ptr` must be previous returned by `Alloq::allocate`.
     pub unsafe fn remove_used(&mut self, raw_chunk_ptr: *mut RawChunk) {
         let raw_chunk = &mut *raw_chunk_ptr;
-        let last = raw_chunk.iter().last().unwrap();
-        RawChunk::connect_unchecked(&mut *self.free_last, &mut *last);
-        self.free_last = last;
+        let last = raw_chunk.back; // TODO: Optimise and use `back` from the
+        RawChunk::connect_unchecked(&mut *self.free_last, raw_chunk);
+        self.free_last = if last.is_null() { raw_chunk_ptr } else { last };
     }
 
     /// Get a `RawChunk` chain that can allocate the `layout`
@@ -318,12 +318,10 @@ impl Pool {
                 return start;
             }
         }
-        if aligned.is_null() {
-            self.free_last =
-                (*self.free_last).alloc_next(&mut self.list_end, chunk_size, layout.align());
-            start = self.free_last;
-            aligned = crate::align_up((*start).chunk as usize, layout.align()) as *mut u8;
-        }
+        self.free_last =
+            (*self.free_last).alloc_next(&mut self.list_end, chunk_size, layout.align());
+        start = self.free_last;
+        aligned = crate::align_up((*start).chunk as usize, layout.align()) as *mut u8;
         while (*self.free_last).chunk.offset_from(aligned) < needed as isize {
             self.free_last =
                 (*self.free_last).alloc_next(&mut self.list_end, chunk_size, layout.align());
@@ -333,6 +331,7 @@ impl Pool {
             (*self.free_last).alloc_next(&mut self.list_end, chunk_size, layout.align());
         (*start).slice_until(&mut *last);
         (*start).addr = aligned as *mut u8;
+        (*start).back = last;
         start
     }
 }
