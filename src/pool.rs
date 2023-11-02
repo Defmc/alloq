@@ -296,7 +296,7 @@ impl Pool {
         let mut last: *mut RawChunk = null_mut();
         let mut aligned: *mut u8;
         let is_continous = |back: *mut RawChunk, next: *mut RawChunk| {
-            (*next).chunk.offset_from((*back).chunk) == chunk_size as isize
+            (*back).chunk.offset_from((*next).chunk) == chunk_size as isize
         };
         // TODO: use `chunk_size` for optimisation reasons
         for c in (*self.free_last).back_iter() {
