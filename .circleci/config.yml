@@ -98,6 +98,7 @@ jobs:
       - restore-cache
       - run: rustup component add clippy
       - run: cargo +nightly clippy -vv --tests --all --all-features --examples -- -D warnings
+      - run: rustup +<<pipeline.parameters.toolchain>> component add clippy
       - save-cache
 
   format:
