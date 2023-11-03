@@ -7,8 +7,10 @@ use spin::Mutex;
 
 use crate::Alloqator;
 
-/// A simple linear allocator.
-/// # Allocation
+/// A simple linear allocator. It just updates the stack's top for allocating and just resets it to
+/// stack's bottom when there are no current allocations.
+/// You shouldn't use it for long-lived allocations or for a global allocator, but it's a LOT
+/// faster for short-lived and tiny allocations
 pub struct Alloq {
     pub heap_start: *mut u8,
     pub iter: Mutex<(usize, *mut u8)>,
@@ -31,7 +33,7 @@ unsafe impl Allocator for Alloq {
         NonNull::new(slice).ok_or(AllocError)
     }
     /// Can't deallocate. Just reset. When the counter reaches 0, it reset the stack's top, since
-    /// counter being 0 means that there is no vvalue allocated
+    /// counter being 0 means that there is no value allocated
     unsafe fn deallocate(&self, _ptr: NonNull<u8>, _layout: Layout) {
         let mut lock = *self.iter.lock();
         lock.0 -= 1;
