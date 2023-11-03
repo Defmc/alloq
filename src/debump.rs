@@ -10,36 +10,26 @@ use crate::Alloqator;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AlloqMetaData {
-    pub start: *mut u8,
+    pub start: Option<NonNull<u8>>,
     pub last_meta: *const AlloqMetaData,
-    pub used: bool,
 }
 
 impl AlloqMetaData {
     pub fn new(start: *mut u8, last_meta: *const AlloqMetaData) -> Self {
         Self {
-            start,
+            start: NonNull::new(start),
             last_meta,
-            used: true,
         }
     }
 
     /// # Safety
-    pub unsafe fn write_meta(
-        &self,
-        obj_start: *mut u8,
-        end: *const u8,
-    ) -> (*mut u8, *const AlloqMetaData) {
-        let ptr_to_write = end.sub(mem::size_of::<Self>()) as *mut AlloqMetaData;
-        *ptr_to_write = *self;
-        (obj_start, ptr_to_write)
-    }
-
-    /// # Safety
-    /// `ptr` must be valid and previous allocated.
-    pub unsafe fn previous_alloc<'a>(ptr: *const u8) -> &'a mut Self {
-        let ptr = ptr.sub(mem::size_of::<Self>());
-        &mut *(ptr as *mut AlloqMetaData)
+    pub unsafe fn write_meta(&self, layout: Layout) -> *mut AlloqMetaData {
+        let addr = crate::align_up(
+            self.start.unwrap().as_ptr().add(layout.size()) as usize,
+            mem::align_of::<Self>(),
+        ) as *mut Self;
+        (*addr) = *self;
+        addr
     }
 
     /// # Safety
@@ -49,22 +39,29 @@ impl AlloqMetaData {
         let start_meta = crate::align_up(end as usize, mem::align_of::<AlloqMetaData>()) as *mut u8;
         &mut *(start_meta as *mut Self)
     }
-
-    pub fn after(&self) -> *const u8 {
-        let ptr = (self as *const AlloqMetaData) as *const u8;
-        unsafe { ptr.add(mem::size_of::<AlloqMetaData>()) }
-    }
 }
 /// A Deallocation-able Bump allocator. Works like `crate::bump::Alloq`, but has several mechanisms
 /// to deallocate in a stack-ish allocator
 pub struct Alloq {
     pub heap_start: *mut u8,
     pub heap_end: *mut u8,
-    pub iter: Mutex<(
-        /* allocations */ usize,
-        /* addr */ *mut u8,
-        /* last meta */ *const AlloqMetaData,
-    )>,
+    pub last_meta: Mutex<*const AlloqMetaData>,
+}
+
+impl Alloq {
+    pub fn pad_alloc(heap_range: Range<*mut u8>) -> *const AlloqMetaData {
+        let layout = Layout::new::<()>();
+        let aligned = crate::align_up(heap_range.start as usize, layout.align()) as *mut u8;
+        let end = unsafe { AlloqMetaData::new(aligned, null_mut()).write_meta(layout) };
+        unsafe {
+            assert!(
+                heap_range.contains(&end.add(1).cast()),
+                "debump: can't allocate any blocks. heap_size: {heap_range:?} ({} bytes)",
+                heap_range.end.offset_from(heap_range.start) as usize
+            );
+        }
+        end
+    }
 }
 
 unsafe impl Allocator for Alloq {
@@ -72,21 +69,20 @@ unsafe impl Allocator for Alloq {
     /// stack, containing where is the block, where is the last `AlloqMetaData` allocated and if
     /// it's being used
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        let mut lock = self.iter.lock();
-        let block_start = lock.1;
-        let start = crate::align_up(lock.1 as usize, layout.align()) as *mut u8;
-        let end = unsafe { start.add(layout.size()) };
-        let start_meta = crate::align_up(end as usize, mem::align_of::<AlloqMetaData>()) as *mut u8;
-        let end_meta = unsafe { start_meta.add(mem::size_of::<AlloqMetaData>()) };
-        if end_meta > self.heap_end {
-            panic!("no available memory")
-        }
-        lock.1 = end_meta;
-        lock.0 += 1;
-        let (md, last_meta) =
-            unsafe { AlloqMetaData::new(block_start, lock.2).write_meta(start, end_meta) };
-        lock.2 = last_meta;
-        let slice = unsafe { core::slice::from_raw_parts_mut(md, layout.size()) };
+        let mut last_meta = self.last_meta.lock();
+        let ptr = unsafe {
+            let end = last_meta.add(1);
+            let obj_addr = crate::align_up(end as usize, layout.align()) as *mut u8;
+            *last_meta = AlloqMetaData::new(obj_addr, *last_meta).write_meta(layout);
+            debug_assert!(
+                self.heap_range().contains(&(last_meta.add(1) as *mut u8)),
+                "can't allocate a new layout. heap range {:?} ({} bytes)",
+                self.heap_range(),
+                self.heap_end.offset_from(self.heap_start) as usize
+            );
+            (**last_meta).start.unwrap().as_ptr()
+        };
+        let slice = unsafe { core::slice::from_raw_parts_mut(ptr, layout.size()) };
         NonNull::new(slice).ok_or(AllocError)
     }
 
@@ -94,22 +90,12 @@ unsafe impl Allocator for Alloq {
     /// stack pointer to `last_meta`) all the
     /// last areas marked as unused
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        let mut lock = *self.iter.lock();
-        lock.0 -= 1;
-        if lock.0 == 0 {
-            lock.1 = self.heap_start;
-            return;
-        }
-        let mut meta = AlloqMetaData::from_alloc_ptr(ptr.as_ptr(), layout);
-        meta.used = false;
-        if meta.after() == lock.1 {
-            while !meta.used {
-                lock.1 = meta.start;
-                if meta.last_meta.is_null() {
-                    return;
-                }
-                meta = &mut *(meta.last_meta as *mut AlloqMetaData);
-                lock.2 = meta.last_meta;
+        let mut last_meta = self.last_meta.lock();
+        let meta = AlloqMetaData::from_alloc_ptr(ptr.as_ptr(), layout);
+        meta.start = None;
+        if meta as *const AlloqMetaData == *last_meta {
+            while (**last_meta).start.is_none() {
+                *last_meta = (**last_meta).last_meta;
             }
         }
     }
@@ -121,7 +107,7 @@ impl Alloqator for Alloq {
     fn new(heap_range: Range<*mut u8>) -> Self {
         Self {
             heap_start: heap_range.start,
-            iter: Mutex::new((0, heap_range.start, null_mut())),
+            last_meta: Mutex::new(Self::pad_alloc(heap_range.clone())),
             heap_end: heap_range.end,
         }
     }
@@ -138,10 +124,8 @@ impl Alloqator for Alloq {
 
     #[inline(always)]
     unsafe fn reset(&self) {
-        let mut lock = self.iter.lock();
-        lock.0 = 0;
-        lock.1 = self.heap_start();
-        lock.2 = null_mut();
+        let mut lock = self.last_meta.lock();
+        *lock = Self::pad_alloc(self.heap_range());
     }
 }
 
