@@ -41,7 +41,17 @@ impl AlloqMetaData {
     }
 }
 /// A Deallocation-able Bump allocator. Works like `crate::bump::Alloq`, but has several mechanisms
-/// to deallocate in a stack-ish allocator
+/// to deallocate in a stack-ish allocator: For each allocations, store if the value is either in
+/// used (valid address) or freed (invalid address). When deallocating, if the value is on stack's top, start to see if there are any
+/// adjacent unused blocks and go back to them.
+/// Ex:
+///     (A, 0x1) -> (B, 0x2) -> (C, 0x3) -> (D, 0x4)
+/// Then, `C` is freed.
+///     (A, 0x1) -> (B, 0x2) -> (C, 0x0) -> (D, 0x4)
+/// Now, deallocating `D`, this happen.
+///     (A, 0x1) -> (B, 0x2) -> (C, 0x0) -> (D, 0x0)
+///     (A, 0x1) -> (B, 0x2) -> (C, 0x0)
+///     (A, 0x1) -> (B, 0x2)
 pub struct Alloq {
     pub heap_start: *mut u8,
     pub heap_end: *mut u8,
@@ -86,9 +96,9 @@ unsafe impl Allocator for Alloq {
         NonNull::new(slice).ok_or(AllocError)
     }
 
-    /// Set the `ptr` metadata as unused. If it's on the top of stack, starts to deallocate (return the
-    /// stack pointer to `last_meta`) all the
-    /// last areas marked as unused
+    /// Set the `ptr` metadata as unused (by `start` = null). If it's on the top of stack, starts to deallocate (return the
+    /// stack pointer to `last_meta`) all the last areas marked as unused. In the worst case, can
+    /// be O(n), where `n` is the number of allocations.
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         let mut last_meta = self.last_meta.lock();
         let meta = AlloqMetaData::from_alloc_ptr(ptr.as_ptr(), layout);
